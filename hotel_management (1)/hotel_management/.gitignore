@@ -1,0 +1,15 @@
+# Python build & caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+venv/
+.venv/
+env/
+.env
+
+# Sensitive configurations & Logs (Chứa thông tin nhạy cảm bảo mật)
+setup.env
+security.log
+*.log

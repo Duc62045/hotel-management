@@ -1,0 +1,17 @@
+# Thư mục thư viện & file chạy Node
+node_modules/
+node.exe
+corepack*
+nodevars.bat
+npm*
+npx*
+
+# Python temporary files
+__pycache__/
+*.pyc
+.venv/
+
+# Cấu hình nhạy cảm & log hệ thống
+**/setup.env
+**/*.log
+security.log
