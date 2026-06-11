@@ -18,7 +18,7 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False) # Mật khẩu băm
-    email = Column(String(100), unique=True)
+    email = Column(String(255), nullable=True) # Mã hóa đối xứng
     full_name = Column(String(100))
     role_id = Column(Integer, ForeignKey("roles.id"))
     login_otp = Column(String(6), nullable=True)
@@ -30,8 +30,21 @@ class User(Base):
     failed_login_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
     created_at = Column(TIMESTAMP, server_default=func.now())
+    phone = Column(String(255), nullable=True) # Mã hóa đối xứng
+    email_hash = Column(String(64), unique=True, index=True, nullable=True) # Băm tìm kiếm
+    phone_hash = Column(String(64), unique=True, index=True, nullable=True) # Băm tìm kiếm
     
     role = relationship("Role", back_populates="users")
+
+# Bảng Websites (Quản lý 100 trang web)
+class Website(Base):
+    __tablename__ = "websites"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    domain = Column(String(100), unique=True, nullable=False)
+    owner_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    is_handed_over = Column(Integer, default=0) # 0: False, 1: True
+    created_at = Column(DateTime, default=func.now())
 
 # Bảng Customers (Khách hàng đặt phòng)
 class Customer(Base):
@@ -39,7 +52,8 @@ class Customer(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     full_name = Column(String(100), nullable=False)
-    phone = Column(String(20))
+    phone = Column(String(255), nullable=True) # Mã hóa đối xứng
+    phone_hash = Column(String(64), index=True, nullable=True) # Băm tìm kiếm
     encrypted_id_card = Column(Text, nullable=False) # CCCD mã hóa
     created_at = Column(TIMESTAMP, server_default=func.now())
 

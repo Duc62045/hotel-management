@@ -64,6 +64,21 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 def ensure_auth_columns(db: Session) -> None:
     """Create auth helper columns if they do not exist (MySQL-compatible)."""
+    # 1. Tăng độ dài cột để lưu dữ liệu mã hóa PII
+    try:
+        db.execute(text("ALTER TABLE users MODIFY COLUMN email VARCHAR(255) NULL"))
+        db.execute(text("ALTER TABLE users MODIFY COLUMN phone VARCHAR(255) NULL"))
+        db.execute(text("ALTER TABLE customers MODIFY COLUMN phone VARCHAR(255) NULL"))
+    except Exception as e:
+        db.rollback()
+
+    # Hủy bỏ index UNIQUE trên email và phone nếu có (do dữ liệu mã hóa không thể dùng UNIQUE index thường)
+    for col in ["email", "phone"]:
+        try:
+            db.execute(text(f"ALTER TABLE users DROP INDEX {col}"))
+        except Exception:
+            pass
+
     columns_to_add = [
         ("login_otp", "VARCHAR(6) NULL"),
         ("login_otp_expires_at", "DATETIME NULL"),
@@ -73,6 +88,9 @@ def ensure_auth_columns(db: Session) -> None:
         ("reset_otp_expires_at", "DATETIME NULL"),
         ("reset_token_hash", "VARCHAR(128) NULL"),
         ("reset_token_expires_at", "DATETIME NULL"),
+        ("phone", "VARCHAR(255) NULL"),
+        ("email_hash", "VARCHAR(64) NULL UNIQUE"),
+        ("phone_hash", "VARCHAR(64) NULL UNIQUE"),
     ]
     for col_name, col_def in columns_to_add:
         exists = db.execute(
@@ -88,6 +106,35 @@ def ensure_auth_columns(db: Session) -> None:
         ).scalar()
         if not exists:
             db.execute(text(f"ALTER TABLE users ADD COLUMN {col_name} {col_def}"))
+
+    # Thêm phone_hash vào bảng customers
+    exists_customer_phone_hash = db.execute(
+        text(
+            """
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'customers'
+              AND COLUMN_NAME = 'phone_hash'
+            """
+        )
+    ).scalar()
+    if not exists_customer_phone_hash:
+        db.execute(text("ALTER TABLE customers ADD COLUMN phone_hash VARCHAR(64) NULL"))
+
+    db.commit()
+
+
+def ensure_roles(db: Session) -> None:
+    roles = [
+        ("Admin", "Quản trị viên hệ thống"),
+        ("Lễ tân", "Nhân viên lễ tân"),
+        ("Customer", "Khách hàng đặt phòng"),
+        ("Moderator", "Điều phối viên khách sạn"),
+    ]
+    for role_name, desc in roles:
+        existing = db.query(models.Role).filter(models.Role.name == role_name).first()
+        if not existing:
+            db.add(models.Role(name=role_name, description=desc))
     db.commit()
 
 
@@ -225,6 +272,7 @@ def on_startup() -> None:
         ensure_booking_payment_column(db)
         ensure_mock_bank_accounts(db)
         ensure_auth_columns(db)
+        ensure_roles(db)
     finally:
         db.close()
 
@@ -323,20 +371,31 @@ def test_database_connection(db: Session = Depends(get_db)):
 @limiter.limit("3/minute")
 def register_user(request: Request, user: schemas.UserCreate, db: Session = Depends(get_db)):
     client_ip = get_remote_address(request)
-    # 1. Kiểm tra xem username hoặc email đã tồn tại chưa (không phân biệt hoa thường)
-    db_user = db.query(models.User).filter(func.lower(models.User.username) == func.lower(user.username)).first()
+    
+    # 1. Xác định username (mặc định lấy từ email nếu không truyền)
+    username = user.username or user.email
+    
+    # Tạo mã băm tìm kiếm
+    email_hash = security.get_sha256_hash(user.email)
+    phone_hash = security.get_sha256_hash(user.phone) if user.phone else None
+    
+    # Kiểm tra xem username, email hoặc phone đã tồn tại chưa bằng cách khớp hash/username
+    db_user = db.query(models.User).filter(func.lower(models.User.username) == func.lower(username)).first()
     if db_user:
         raise HTTPException(status_code=400, detail="Tên đăng nhập đã tồn tại")
 
-    db_email = db.query(models.User).filter(func.lower(models.User.email) == func.lower(user.email)).first()
+    db_email = db.query(models.User).filter(models.User.email_hash == email_hash).first()
     if db_email:
         raise HTTPException(status_code=400, detail="Email đã được sử dụng")
 
+    if user.phone:
+        db_phone = db.query(models.User).filter(models.User.phone_hash == phone_hash).first()
+        if db_phone:
+            raise HTTPException(status_code=400, detail="Số điện thoại đã được sử dụng")
+
     # 2. Xác định role hợp lệ cho tài khoản tự đăng ký
-    # Ưu tiên role_id client gửi lên nếu tồn tại trong DB; nếu không thì fallback về role Customer/Guest.
     selected_role_id = user.role_id
-    role = db.query(models.Role).filter(models.Role.id == selected_role_id).first()
-    if role is None:
+    if selected_role_id is None:
         customer_role = db.query(models.Role).filter(
             func.lower(models.Role.name).in_(["customer", "guest", "khach hang", "khách hàng"])
         ).first()
@@ -347,31 +406,51 @@ def register_user(request: Request, user: schemas.UserCreate, db: Session = Depe
                 status_code=400,
                 detail="Không tìm thấy vai trò mặc định cho khách hàng. Vui lòng liên hệ quản trị hệ thống."
             )
+    else:
+        role = db.query(models.Role).filter(models.Role.id == selected_role_id).first()
+        if role is None:
+            raise HTTPException(status_code=400, detail="Vai trò được chỉ định không tồn tại.")
     
     # 3. Băm mật khẩu người dùng gửi lên
     hashed_password = security.get_password_hash(user.password)
     
-    # 4. Tạo đối tượng User mới (Mô hình hóa dữ liệu để lưu vào DB)
+    # 4. Mã hóa thông tin nhạy cảm PII
+    encrypted_email = security.encrypt_data(user.email)
+    encrypted_phone = security.encrypt_data(user.phone) if user.phone else None
+    
+    # Tạo đối tượng User mới
     new_user = models.User(
-        username=user.username,
-        email=user.email,
-        password_hash=hashed_password, # Lưu mật khẩu đã băm, không lưu mật khẩu gốc
+        username=username,
+        email=encrypted_email,
+        phone=encrypted_phone,
+        email_hash=email_hash,
+        phone_hash=phone_hash,
+        password_hash=hashed_password,
         full_name=user.full_name,
         role_id=selected_role_id
     )
     
-    # 5. Lưu vào Database (bảo vệ bằng try-except IntegrityError)
+    # 5. Lưu vào Database
     from sqlalchemy.exc import IntegrityError
     try:
         db.add(new_user)
         db.commit()
-        db.refresh(new_user) # Lấy lại data từ DB (có ID tự tăng) để trả về cho người dùng
+        db.refresh(new_user)
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="Tên đăng nhập hoặc Email đã tồn tại")
+        raise HTTPException(status_code=400, detail="Đăng ký thất bại. Tên đăng nhập, Email hoặc Số điện thoại đã tồn tại.")
     
-    log_security_event(EVENT_REGISTER_SUCCESS, ip=client_ip, user=user.username)
-    return new_user
+    log_security_event(EVENT_REGISTER_SUCCESS, ip=client_ip, user=username)
+    
+    # Trả về schema với thông tin đã giải mã cho client
+    return schemas.UserResponse(
+        id=new_user.id,
+        username=new_user.username,
+        email=user.email,
+        phone=user.phone,
+        full_name=new_user.full_name,
+        role_id=new_user.role_id
+    )
     
 # ==========================================
 # API ĐĂNG NHẬP (LẤY TOKEN)
@@ -384,7 +463,17 @@ def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends()
 ):
     client_ip = get_remote_address(request)
-    user = db.query(models.User).filter(models.User.username == form_data.username).first()
+    username_input = form_data.username
+    input_hash = security.get_sha256_hash(username_input)
+    # Làm sạch input để chống Log Injection
+    clean_username = security.sanitize_log_input(username_input)
+
+    # Tìm kiếm user qua username, email_hash hoặc phone_hash
+    user = db.query(models.User).filter(
+        (models.User.username == username_input) |
+        (models.User.email_hash == input_hash) |
+        (models.User.phone_hash == input_hash)
+    ).first()
 
     # --- ACCOUNT LOCKOUT CHECK ---
     if user and user.locked_until:
@@ -394,7 +483,7 @@ def login_for_access_token(
         if datetime.now(timezone.utc) < lock_time:
             remaining = int((lock_time - datetime.now(timezone.utc)).total_seconds() // 60) + 1
             log_security_event(
-                EVENT_ACCOUNT_LOCKED, ip=client_ip, user=form_data.username,
+                EVENT_ACCOUNT_LOCKED, ip=client_ip, user=clean_username,
                 details=f"Tài khoản vẫn đang bị khóa. Còn ~{remaining} phút."
             )
             raise HTTPException(
@@ -407,24 +496,32 @@ def login_for_access_token(
             user.failed_login_attempts = 0
             db.commit()
 
-    if not user or not security.verify_password(form_data.password, user.password_hash):
-        # --- GHI NHẬN ĐĂNG NHẬP THẤT BẠI ---
-        if user:
-            user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-            if user.failed_login_attempts >= MAX_LOGIN_ATTEMPTS:
-                user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
-                db.commit()
-                log_security_event(
-                    EVENT_ACCOUNT_LOCKED, ip=client_ip, user=form_data.username,
-                    details=f"Khóa {LOCKOUT_DURATION_MINUTES} phút sau {MAX_LOGIN_ATTEMPTS} lần sai."
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Tài khoản bị khóa {LOCKOUT_DURATION_MINUTES} phút do nhập sai mật khẩu {MAX_LOGIN_ATTEMPTS} lần liên tiếp.",
-                )
-            db.commit()
+    # Cân bằng thời gian phản hồi: nếu user không tồn tại, chạy dummy bcrypt
+    if not user:
+        security.verify_password_dummy()
+        log_security_event(EVENT_LOGIN_FAILED, ip=client_ip, user=clean_username)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tên đăng nhập hoặc mật khẩu không đúng",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-        log_security_event(EVENT_LOGIN_FAILED, ip=client_ip, user=form_data.username)
+    # Nếu mật khẩu không đúng
+    if not security.verify_password(form_data.password, user.password_hash):
+        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+        if user.failed_login_attempts >= MAX_LOGIN_ATTEMPTS:
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOCKOUT_DURATION_MINUTES)
+            db.commit()
+            log_security_event(
+                EVENT_ACCOUNT_LOCKED, ip=client_ip, user=clean_username,
+                details=f"Khóa {LOCKOUT_DURATION_MINUTES} phút sau {MAX_LOGIN_ATTEMPTS} lần sai."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Tài khoản bị khóa {LOCKOUT_DURATION_MINUTES} phút do nhập sai mật khẩu {MAX_LOGIN_ATTEMPTS} lần liên tiếp.",
+            )
+        db.commit()
+        log_security_event(EVENT_LOGIN_FAILED, ip=client_ip, user=clean_username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Tên đăng nhập hoặc mật khẩu không đúng",
@@ -441,7 +538,7 @@ def login_for_access_token(
         data={"sub": user.username}, expires_delta=access_token_expires
     )
 
-    log_security_event(EVENT_LOGIN_SUCCESS, ip=client_ip, user=user.username)
+    log_security_event(EVENT_LOGIN_SUCCESS, ip=client_ip, user=clean_username)
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -453,9 +550,8 @@ def forgot_password(
     db: Session = Depends(get_db)
 ):
     ensure_auth_columns(db)
-    user = db.query(models.User).filter(
-        func.lower(models.User.email) == str(payload.email).lower()
-    ).first()
+    email_hash = security.get_sha256_hash(payload.email)
+    user = db.query(models.User).filter(models.User.email_hash == email_hash).first()
     if not user:
         raise HTTPException(status_code=404, detail="Email chưa đăng ký trong hệ thống")
 
@@ -472,7 +568,8 @@ def forgot_password(
     reset_link = f"{app_base_url}/auth/reset-password-page?token={raw_token}"
     email_sent = False
     if user.email:
-        email_sent = send_password_reset_email(user.email, reset_link, 15)
+        decrypted_email = security.decrypt_data(user.email)
+        email_sent = send_password_reset_email(decrypted_email, reset_link, 15)
 
     if not email_sent:
         return {
@@ -481,8 +578,9 @@ def forgot_password(
             "reset_debug_link": reset_link,
         }
 
+    decrypted_email = security.decrypt_data(user.email) if user.email else ""
     return {
-        "message": f"Da gui email khoi phuc den {user.email}. Vui long kiem tra hop thu (ca muc Spam).",
+        "message": f"Da gui email khoi phuc den {decrypted_email}. Vui long kiem tra hop thu (ca muc Spam).",
         "email_sent": True,
     }
 
@@ -611,6 +709,93 @@ def get_current_admin(
         )
     return current_user
 
+
+def get_current_staff(
+    current_user: models.User = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    """Hàm chặn: Chỉ cho phép Admin, Lễ tân hoặc Moderator đi qua"""
+    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
+    if not user_role or user_role.name.lower() not in ["admin", "lễ tân", "moderator"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Bạn không có quyền thực hiện hành động này. Yêu cầu quyền Nhân viên/Lễ tân/Moderator."
+        )
+    return current_user
+
+
+@app.post("/admin/users/{user_id}/approve-moderator")
+def approve_moderator(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin)
+):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng này.")
+        
+    moderator_role = db.query(models.Role).filter(func.lower(models.Role.name) == "moderator").first()
+    if not moderator_role:
+        raise HTTPException(status_code=500, detail="Không tìm thấy vai trò Moderator trong hệ thống.")
+        
+    user.role_id = moderator_role.id
+    db.commit()
+    return {"message": f"Đã duyệt tài khoản '{user.username}' làm Moderator (Điều phối viên)."}
+
+# ==========================================
+# API QUẢN LÝ TRANG WEB (WEBSITES)
+# ==========================================
+@app.post("/websites", response_model=schemas.WebsiteResponse)
+def create_website(
+    website: schemas.WebsiteCreate,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin)
+):
+    # Kiểm tra tên miền trùng lặp
+    existing = db.query(models.Website).filter(models.Website.domain == website.domain).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Tên miền này đã tồn tại.")
+    
+    new_site = models.Website(
+        name=website.name,
+        domain=website.domain
+    )
+    db.add(new_site)
+    db.commit()
+    db.refresh(new_site)
+    return new_site
+
+@app.get("/websites", response_model=list[schemas.WebsiteResponse])
+def get_all_websites(db: Session = Depends(get_db)):
+    return db.query(models.Website).all()
+
+@app.post("/websites/{website_id}/handover")
+def handover_website(
+    website_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin)
+):
+    site = db.query(models.Website).filter(models.Website.id == website_id).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Không tìm thấy trang web này.")
+        
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng nhận bàn giao.")
+        
+    # Gán quyền sở hữu
+    site.owner_id = user.id
+    site.is_handed_over = 1
+    
+    # Nâng cấp vai trò của người nhận bàn giao lên Admin
+    admin_role = db.query(models.Role).filter(func.lower(models.Role.name) == "admin").first()
+    if admin_role:
+        user.role_id = admin_role.id
+        
+    db.commit()
+    return {"message": f"Bàn giao thành công trang web '{site.name}' cho khách hàng '{user.username}'. Khách hàng đã được nâng cấp lên quyền Quản trị."}
+
 # ==========================================
 # API THÊM KHÁCH HÀNG (YÊU CẦU ĐĂNG NHẬP)
 # ==========================================
@@ -620,14 +805,17 @@ def create_customer(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user) # Yêu cầu phải đi qua chốt chặn
 ):
-    # 1. Mã hóa số CCCD trước khi lưu
+    # 1. Mã hóa số CCCD và SĐT trước khi lưu
     encrypted_id = security.encrypt_data(customer.id_card)
+    encrypted_phone = security.encrypt_data(customer.phone)
+    phone_hash = security.get_sha256_hash(customer.phone)
     
     # 2. Tạo đối tượng Customer
     new_customer = models.Customer(
         user_id=current_user.id, # Tự động lấy ID của người đang đăng nhập gán vào
         full_name=customer.full_name,
-        phone=customer.phone,
+        phone=encrypted_phone,
+        phone_hash=phone_hash,
         encrypted_id_card=encrypted_id # Lưu chuỗi đã mã hóa
     )
     
@@ -636,7 +824,12 @@ def create_customer(
     db.commit()
     db.refresh(new_customer)
     
-    return new_customer
+    return schemas.CustomerResponse(
+        id=new_customer.id,
+        full_name=new_customer.full_name,
+        phone=customer.phone,
+        user_id=new_customer.user_id
+    )
 
 # ==========================================
 # API XEM CHI TIẾT KHÁCH HÀNG (YÊU CẦU ĐĂNG NHẬP)
@@ -656,15 +849,41 @@ def get_customer(
             detail="Không tìm thấy khách hàng này"
         )
     
-    # 2. Giải mã số CCCD
+    # Kiểm tra phân quyền: Chỉ tài khoản staff (Admin, Lễ tân, Moderator) hoặc chính chủ sở hữu hồ sơ được xem
+    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
+    role_name = user_role.name.lower() if user_role else "guest"
+    is_admin = role_name == "admin"
+    is_staff = role_name in ["admin", "lễ tân", "moderator"]
+    
+    if customer.user_id != current_user.id and not is_staff:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền xem thông tin chi tiết của khách hàng này."
+        )
+    
+    # 2. Giải mã dữ liệu nhạy cảm
     decrypted_id_card = security.decrypt_data(customer.encrypted_id_card)
+    decrypted_phone = security.decrypt_data(customer.phone) if customer.phone else ""
+    
+    # Áp dụng mặt nạ dữ liệu động (Masking): Chỉ Admin hoặc Chính chủ được xem đầy đủ
+    should_mask = not (customer.user_id == current_user.id or is_admin)
+    if should_mask:
+        decrypted_id_card = security.mask_data(decrypted_id_card, 3, 3)
+        decrypted_phone = security.mask_data(decrypted_phone, 3, 4)
+        
+    # Ghi log kiểm toán bảo mật truy cập thông tin nhạy cảm
+    log_security_event(
+        "EVENT_VIEW_CUSTOMER_PII",
+        user=current_user.username,
+        details=f"Viewed customer_id={customer.id}, name={customer.full_name}, PII masked={should_mask}"
+    )
     
     # 3. Trả dữ liệu về cho client
     return {
         "id": customer.id,
         "full_name": customer.full_name,
-        "phone": customer.phone,
-        "id_card": decrypted_id_card, # Nhét số CCCD đã giải mã vào đây
+        "phone": decrypted_phone,
+        "id_card": decrypted_id_card,
         "user_id": customer.user_id
     }
 
@@ -825,7 +1044,7 @@ def app_create_booking(
     return {"message": "Đặt phòng thành công!", "booking": new_booking}
 
 @app.get("/bookings")
-def get_all_bookings(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def get_all_bookings(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_staff)):
     bookings = db.query(models.Booking).order_by(models.Booking.id.desc()).all()
     return bookings
 
@@ -836,6 +1055,13 @@ def get_booking_detail(booking_id: int, db: Session = Depends(get_db), current_u
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt phòng này.")
     
     customer = db.query(models.Customer).filter(models.Customer.id == booking.customer_id).first()
+    
+    # Kiểm tra phân quyền: Chỉ staff hoặc chính khách hàng đặt đơn đó được xem
+    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
+    is_staff = user_role and user_role.name.lower() in ["admin", "lễ tân", "moderator"]
+    if (not customer or customer.user_id != current_user.id) and not is_staff:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền xem thông tin đặt phòng này.")
+        
     room = db.query(models.Room).filter(models.Room.id == booking.room_id).first()
     
     return {
@@ -851,7 +1077,7 @@ def get_booking_detail(booking_id: int, db: Session = Depends(get_db), current_u
     }
 
 @app.put("/bookings/{booking_id}/check-in")
-def check_in_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def check_in_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_staff)):
     booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Không tìm thấy phiếu đặt phòng này.")
@@ -871,7 +1097,7 @@ def check_in_booking(booking_id: int, db: Session = Depends(get_db), current_use
     return {"message": "Nhận phòng thành công!"}
 
 @app.put("/bookings/{booking_id}/check-out")
-def check_out_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def check_out_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_staff)):
     booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Không tìm thấy phiếu đặt phòng này.")
@@ -900,6 +1126,12 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db), current_user:
     if not booking:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt phòng")
         
+    customer = db.query(models.Customer).filter(models.Customer.id == booking.customer_id).first()
+    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
+    is_staff = user_role and user_role.name.lower() in ["admin", "lễ tân", "moderator"]
+    if (not customer or customer.user_id != current_user.id) and not is_staff:
+        raise HTTPException(status_code=403, detail="Bạn không có quyền hủy đơn đặt phòng này.")
+
     # Cho phép hủy khi đơn hàng chưa nhận phòng (đang pending hoặc confirmed)
     if booking.status not in ['pending', 'confirmed']:
         raise HTTPException(status_code=400, detail=f"Không thể hủy đơn này vì trạng thái hiện tại là: {booking.status}")
@@ -919,7 +1151,7 @@ def cancel_booking(booking_id: int, db: Session = Depends(get_db), current_user:
 # CẬP NHẬT CHUẨN: API XỬ LÝ KHÁCH KHÔNG ĐẾN (NO-SHOW)
 # ========================================================
 @app.put("/bookings/{booking_id}/no-show")
-def no_show_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def no_show_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_staff)):
     booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt phòng này.")
@@ -939,7 +1171,7 @@ def no_show_booking(booking_id: int, db: Session = Depends(get_db), current_user
     return {"message": "Đã đánh dấu khách không đến. Phòng đã được giải phóng."}
 
 @app.put("/rooms/{room_id}/clean")
-def clean_room(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def clean_room(room_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_staff)):
     # 1. Tìm phòng trong cơ sở dữ liệu
     room = db.query(models.Room).filter(models.Room.id == room_id).first()
     if not room:
@@ -1009,6 +1241,118 @@ def get_statistics(
         "total_bookings": total_bookings
     }
 
+@app.get("/admin/security-report")
+def get_security_report(
+    db: Session = Depends(get_db),
+    admin: models.User = Depends(get_current_admin)
+):
+    """API phân tích security.log chủ động để phát hiện các mối đe dọa brute-force, spraying, và DDOS."""
+    log_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "security.log")
+    if not os.path.exists(log_file_path):
+        return {"alerts": [], "stats": {"total_events": 0}, "message": "Chưa có dữ liệu log bảo mật."}
+
+    alerts = []
+    total_events = 0
+    failures_by_ip = {}  # ip -> list of timestamps
+    failures_by_user = {}  # username -> set of ips
+    spraying_by_ip = {}  # ip -> set of distinct usernames tried
+    
+    now = datetime.now()
+    time_window = timedelta(minutes=5)
+
+    with open(log_file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" | ")
+            if len(parts) < 3:
+                continue
+            
+            total_events += 1
+            timestamp_str = parts[0]
+            event_type = parts[2]
+            
+            # Chỉ phân tích sự kiện LOGIN_FAILED
+            if event_type != "LOGIN_FAILED":
+                continue
+                
+            try:
+                log_time = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+                
+            # Kiểm tra xem log có trong cửa sổ 5 phút qua không
+            if now - log_time > time_window:
+                continue
+                
+            # Trích xuất IP và User
+            ip = "unknown"
+            user = "anonymous"
+            for p in parts[3:]:
+                if p.startswith("IP="):
+                    ip = p.split("=")[1]
+                elif p.startswith("user="):
+                    user = p.split("=")[1]
+                    
+            # Thống kê theo IP
+            if ip not in failures_by_ip:
+                failures_by_ip[ip] = []
+            failures_by_ip[ip].append(log_time)
+            
+            # Thống kê theo User
+            if user not in failures_by_user:
+                failures_by_user[user] = set()
+            failures_by_user[user].add(ip)
+            
+            # Thống kê Password Spraying (các user khác nhau từ cùng IP)
+            if ip not in spraying_by_ip:
+                spraying_by_ip[ip] = set()
+            spraying_by_ip[ip].add(user)
+
+    # Phân tích luật để phát hiện tấn công
+    # Luật 1: Brute Force (Một IP gõ sai > 10 lần trong 5 phút)
+    for ip, times in failures_by_ip.items():
+        if len(times) > 10:
+            alerts.append({
+                "type": "BRUTE_FORCE",
+                "severity": "HIGH",
+                "source_ip": ip,
+                "message": f"Phát hiện dấu hiệu tấn công Brute Force từ IP '{ip}' (Thử thất bại {len(times)} lần trong 5 phút)."
+            })
+
+    # Luật 2: Password Spraying (Một IP thử nhiều tài khoản khác nhau > 5)
+    for ip, users in spraying_by_ip.items():
+        if len(users) > 5:
+            alerts.append({
+                "type": "PASSWORD_SPRAYING",
+                "severity": "HIGH",
+                "source_ip": ip,
+                "message": f"Phát hiện dấu hiệu tấn công Password Spraying từ IP '{ip}' nhắm vào {len(users)} tài khoản khác nhau: {list(users)}."
+            })
+
+    # Luật 3: Tấn công Brute Force Phân tán (Một tài khoản bị thử từ > 3 IP khác nhau)
+    for user, ips in failures_by_user.items():
+        if len(ips) > 3:
+            alerts.append({
+                "type": "DISTRIBUTED_BRUTE_FORCE",
+                "severity": "CRITICAL",
+                "target_user": user,
+                "message": f"Phát hiện dấu hiệu tấn công Brute Force Phân tán nhắm vào tài khoản '{user}' từ {len(ips)} IP khác nhau: {list(ips)}."
+            })
+
+    return {
+        "status": "success",
+        "total_analyzed_events": total_events,
+        "alerts_count": len(alerts),
+        "alerts": alerts,
+        "raw_stats": {
+            "failures_by_ip": {ip: len(times) for ip, times in failures_by_ip.items()},
+            "failures_by_user_ips": {user: list(ips) for user, ips in failures_by_user.items()},
+            "spraying_by_ip": {ip: list(users) for ip, users in spraying_by_ip.items()}
+        }
+    }
+
 @app.get("/my-bookings")
 def get_my_bookings(
     db: Session = Depends(get_db),
@@ -1048,9 +1392,12 @@ def create_my_profile(
 
     # 2. Tạo hồ sơ Customer và liên kết với User.id
     encrypted_id = security.encrypt_data(profile.id_card)
+    encrypted_phone = security.encrypt_data(profile.phone)
+    phone_hash = security.get_sha256_hash(profile.phone)
     new_customer = models.Customer(
         full_name=profile.full_name or current_user.full_name, # Lấy tên từ Form hoặc từ lúc đăng ký
-        phone=profile.phone,
+        phone=encrypted_phone,
+        phone_hash=phone_hash,
         encrypted_id_card=encrypted_id,
         user_id=current_user.id # <--- Gắn ID của tài khoản đang đăng nhập vào đây
     )
@@ -1059,7 +1406,12 @@ def create_my_profile(
     db.commit()
     db.refresh(new_customer)
     
-    return new_customer
+    return schemas.CustomerResponse(
+        id=new_customer.id,
+        full_name=new_customer.full_name,
+        phone=profile.phone,
+        user_id=new_customer.user_id
+    )
 
 # ==========================================
 # THANH TOÁN NỘI BỘ (Native app — không API bên thứ 3)

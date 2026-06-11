@@ -27,8 +27,10 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # ==========================================
 # 2. CẤU HÌNH MÃ HÓA DỮ LIỆU NHẠY CẢM (CCCD)
 # ==========================================
-# Định nghĩa khóa bí mật Fernet — lấy từ biến môi trường, không hardcode
-_fernet_key_str = os.getenv("FERNET_KEY", "rXm_U8H9G4D2v-T5qP_1kL_nB7Z_yW3x_aC5v_E9N_8=")
+# Định nghĩa khóa bí mật Fernet — lấy từ biến môi trường, ném lỗi nếu thiếu để tránh hardcode lộ lọt
+_fernet_key_str = os.getenv("FERNET_KEY")
+if not _fernet_key_str:
+    raise ValueError("LỖI BẢO MẬT CỰC KỲ NGHIÊM TRỌNG: Thiếu biến môi trường FERNET_KEY để mã hóa dữ liệu nhạy cảm!")
 SECRET_FERNET_KEY = _fernet_key_str.encode() if isinstance(_fernet_key_str, str) else _fernet_key_str
 cipher_suite = Fernet(SECRET_FERNET_KEY)
 
@@ -68,3 +70,46 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     # Mã hóa dữ liệu bằng SECRET_KEY thành một chuỗi token
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
+
+# ==========================================
+# 4. HÀM HỖ TRỢ BẢO MẬT PII
+# ==========================================
+import hmac
+import hashlib
+
+BLIND_INDEX_KEY = os.getenv("BLIND_INDEX_KEY")
+if not BLIND_INDEX_KEY:
+    raise ValueError("LỖI BẢO MẬT CỰC KỲ NGHIÊM TRỌNG: Thiếu biến môi trường BLIND_INDEX_KEY để băm blind index!")
+
+def get_sha256_hash(value: str) -> str:
+    """Tạo mã băm một chiều keyed-hash (HMAC-SHA256) phục vụ tìm kiếm dữ liệu đã mã hóa."""
+    if not value:
+        return ""
+    return hmac.new(
+        BLIND_INDEX_KEY.encode(),
+        value.lower().strip().encode(),
+        hashlib.sha256
+    ).hexdigest()
+
+def mask_data(value: str, visible_prefix: int = 3, visible_suffix: int = 4) -> str:
+    """Làm mờ dữ liệu nhạy cảm (ví dụ: SĐT, CCCD)."""
+    if not value:
+        return ""
+    val_len = len(value)
+    if val_len <= visible_prefix + visible_suffix:
+        return "*" * val_len
+    return value[:visible_prefix] + "*" * (val_len - visible_prefix - visible_suffix) + value[-visible_suffix:]
+
+# Dummy bcrypt hash of 'dummy_password' for timing equalization
+DUMMY_HASH = "$2b$12$L.bH8kYn0V8L9D4V7H.bOe6x2KqW5Z0d0e0f0g0h0i0j0k0l0m0n0"
+
+def verify_password_dummy() -> None:
+    """Chạy đối sánh mật khẩu giả để cân bằng thời gian xử lý (Timing Equalization)."""
+    verify_password("dummy_password", DUMMY_HASH)
+
+def sanitize_log_input(text: str) -> str:
+    """Loại bỏ ký tự xuống dòng CRLF và các ký tự điều khiển để chống Log Injection."""
+    if not text:
+        return ""
+    clean_text = text.replace("\r", "").replace("\n", "").strip()
+    return clean_text[:100]

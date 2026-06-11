@@ -66,9 +66,11 @@ print("\n--- Tạo tài khoản ---")
 for acc in ACCOUNTS:
     existing = db.query(User).filter(User.username == acc["username"]).first()
     if existing:
-        # Cập nhật password và role phòng trường hợp đã tồn tại
+        # Cập nhật password và role, đồng thời mở khóa tài khoản
         existing.password_hash = get_password_hash(acc["password"])
         existing.role_id = role_map[acc["role_name"]]
+        existing.locked_until = None
+        existing.failed_login_attempts = 0
         db.commit()
         print(f"  [=] Đã cập nhật: {acc['username']} (role={acc['role_name']})")
     else:

@@ -21,11 +21,12 @@ def _validate_password_strength(password: str) -> str:
 
 # 1. Schema yêu cầu người dùng gửi lên khi Đăng ký
 class UserCreate(BaseModel):
-    username: str
-    password: str
     email: EmailStr
+    phone: str
+    password: str
     full_name: Optional[str] = None
-    role_id: int
+    username: Optional[str] = None
+    role_id: Optional[int] = None
 
     @field_validator("password")
     @classmethod
@@ -37,8 +38,25 @@ class UserResponse(BaseModel):
     id: int
     username: str
     email: str
+    phone: Optional[str] = None
     full_name: Optional[str] = None
     role_id: int
+
+    class Config:
+        from_attributes = True
+
+# Schema Quản lý trang web
+class WebsiteCreate(BaseModel):
+    name: str
+    domain: str
+
+class WebsiteResponse(BaseModel):
+    id: int
+    name: str
+    domain: str
+    owner_id: Optional[int] = None
+    is_handed_over: int
+    created_at: datetime
 
     class Config:
         from_attributes = True
