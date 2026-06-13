@@ -19,7 +19,7 @@ export default function LoginScreen({ navigation }) {
         await AsyncStorage.setItem('role', role);
 
         let targetScreen = 'MyBookings';
-        if (role === 'admin') {
+        if (role === 'admin' || role === 'super admin' || role === 'moderator') {
             targetScreen = 'RoomList';
         } else if (role.includes('lễ tân') || role.includes('le tan') || role === 'receptionist') {
             targetScreen = 'Customer';
@@ -110,8 +110,13 @@ export default function LoginScreen({ navigation }) {
 
     return (
         <View style={styles.container}>
+            <TouchableOpacity style={styles.backBtn} onPress={() => navigation.navigate('Landing')}>
+                <Text style={styles.backBtnText}>← Trang chủ</Text>
+            </TouchableOpacity>
+
+            <Text style={styles.staffBadge}>🔐 Khu vực Nhân viên</Text>
             <Text style={styles.title}>Quản lý Khách sạn</Text>
-            <Text style={styles.subtitle}>Đăng nhập để tiếp tục</Text>
+            <Text style={styles.subtitle}>Đăng nhập dành cho Admin & Lễ tân</Text>
 
             <TextInput
                 style={styles.input}
@@ -148,9 +153,6 @@ export default function LoginScreen({ navigation }) {
                 )}
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.linkButton} onPress={() => navigation.navigate('Register')}>
-                <Text style={styles.linkText}>Chưa có tài khoản? Đăng ký ngay</Text>
-            </TouchableOpacity>
             <TouchableOpacity style={styles.linkButton} onPress={() => navigation.navigate('ForgotPassword')}>
                 <Text style={styles.linkText}>Quên mật khẩu?</Text>
             </TouchableOpacity>
@@ -163,14 +165,22 @@ const styles = StyleSheet.create({
         flex: 1,
         justifyContent: 'center',
         padding: 24,
-        backgroundColor: '#f5f5f5',
+        backgroundColor: '#f0f4ff',
+    },
+    backBtn: { marginBottom: 16 },
+    backBtnText: { color: '#4f46e5', fontSize: 14, fontWeight: '600' },
+    staffBadge: {
+        textAlign: 'center',
+        fontSize: 13,
+        color: '#6b7280',
+        marginBottom: 8,
     },
     title: {
         fontSize: 28,
         fontWeight: 'bold',
         textAlign: 'center',
         marginBottom: 8,
-        color: '#1a1a2e',
+        color: '#1a1a3e',
     },
     subtitle: {
         fontSize: 14,

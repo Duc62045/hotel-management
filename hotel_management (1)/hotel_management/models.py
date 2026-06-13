@@ -68,6 +68,9 @@ class Room(Base):
     room_number = Column(String(50), unique=True, index=True)
     type_id = Column(Integer) # Sử dụng type_id giống hệt Database của bạn
     status = Column(String(50), default="Trống")
+    image_url = Column(String(500), nullable=True)  # URL ảnh phòng
+    description = Column(Text, nullable=True)        # Mô tả chi tiết phòng
+    amenitiesjson = Column(Text, nullable=True)      # Tiện nghi JSON string
 
 class Booking(Base):
     __tablename__ = "bookings"
@@ -120,3 +123,17 @@ class PaymentTransaction(Base):
     otp_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=func.now())
     completed_at = Column(DateTime, nullable=True)
+
+
+class ApprovalRequest(Base):
+    __tablename__ = "approval_requests"
+    id = Column(Integer, primary_key=True, index=True)
+    requester_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    approver_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action_type = Column(String(50), nullable=False)  # e.g. 'cancel_booking', 'change_room'
+    target_id = Column(Integer, nullable=True)         # booking_id or room_id
+    reason = Column(Text, nullable=True)
+    status = Column(String(20), default="pending")     # pending/approved/rejected
+    note = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=func.now())
+    resolved_at = Column(DateTime, nullable=True)

@@ -1,8 +1,10 @@
 """
-Script tạo tài khoản mẫu cho tất cả các role:
-  - admin    / Admin@123
-  - letan    / Letan@123
-  - customer / Customer@123
+Script tạo tài khoản mẫu cho tất cả 5 role phân quyền khách sạn:
+  - superadmin_test / SuperAdmin@123 (Chủ khách sạn / Super Admin)
+  - admin_test      / Admin@123      (Quản lý hệ thống / Admin)
+  - moderator_test  / Moderator@123  (Điều phối viên / Moderator)
+  - letan_test      / Letan@123      (Nhân viên lễ tân / Lễ tân)
+  - customer_test   / Customer@123   (Khách hàng / Customer)
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
@@ -14,11 +16,13 @@ from security import get_password_hash
 db = SessionLocal()
 
 # ─────────────────────────────────────────────
-# 1. Đảm bảo tất cả role tồn tại
+# 1. Đảm bảo tất cả 5 role tồn tại
 # ─────────────────────────────────────────────
 ROLES_TO_ENSURE = [
-    {"name": "Admin",       "description": "Quản trị viên hệ thống"},
-    {"name": "Lễ tân",      "description": "Nhân viên lễ tân"},
+    {"name": "Super Admin", "description": "Chủ khách sạn — quyền cao nhất"},
+    {"name": "Admin",       "description": "Quản lý hệ thống — quản trị toàn bộ"},
+    {"name": "Moderator",   "description": "Điều phối viên — quản lý ca, duyệt yêu cầu"},
+    {"name": "Lễ tân",      "description": "Nhân viên lễ tân — xử lý booking"},
     {"name": "Customer",    "description": "Khách hàng đặt phòng"},
 ]
 
@@ -32,6 +36,9 @@ for r_info in ROLES_TO_ENSURE:
         db.refresh(role)
         print(f"  [+] Đã tạo role: {r_info['name']}")
     else:
+        # Đảm bảo cập nhật mô tả nếu cần
+        role.description = r_info["description"]
+        db.commit()
         print(f"  [=] Role đã tồn tại: {r_info['name']} (id={role.id})")
     role_map[r_info["name"]] = role.id
 
@@ -40,11 +47,25 @@ for r_info in ROLES_TO_ENSURE:
 # ─────────────────────────────────────────────
 ACCOUNTS = [
     {
+        "username": "superadmin_test",
+        "password": "SuperAdmin@123",
+        "email":    "superadmin_test@hotel.vn",
+        "full_name":"Chủ Khách Sạn",
+        "role_name":"Super Admin",
+    },
+    {
         "username": "admin_test",
         "password": "Admin@123",
         "email":    "admin_test@hotel.vn",
         "full_name":"Quản Trị Viên",
         "role_name":"Admin",
+    },
+    {
+        "username": "moderator_test",
+        "password": "Moderator@123",
+        "email":    "moderator_test@hotel.vn",
+        "full_name":"Điều Phối Viên",
+        "role_name":"Moderator",
     },
     {
         "username": "letan_test",
@@ -87,10 +108,12 @@ for acc in ACCOUNTS:
 
 db.close()
 
-print("\n========================================")
+print("\n===========================================================")
 print("  THÔNG TIN ĐĂNG NHẬP")
-print("========================================")
-print("  Admin   : admin_test   / Admin@123")
-print("  Lễ tân  : letan_test   / Letan@123")
-print("  Customer: customer_test / Customer@123")
-print("========================================")
+print("===========================================================")
+print("  Super Admin: superadmin_test / SuperAdmin@123")
+print("  Admin      : admin_test      / Admin@123")
+print("  Moderator  : moderator_test  / Moderator@123")
+print("  Lễ tân     : letan_test      / Letan@123")
+print("  Customer   : customer_test   / Customer@123")
+print("===========================================================")

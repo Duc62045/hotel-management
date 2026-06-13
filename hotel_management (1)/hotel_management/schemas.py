@@ -212,3 +212,91 @@ class PaymentStatusResponse(BaseModel):
     failure_reason: Optional[str] = None
     account_masked: Optional[str] = None
     completed_at: Optional[datetime] = None
+
+
+# ==========================================
+# SCHEMAS ĐẶT PHÒNG CÔNG KHAI (không cần login)
+# ==========================================
+class PublicBookingCreate(BaseModel):
+    full_name: str
+    phone: str
+    email: EmailStr
+    room_id: int
+    check_in_date: date
+    check_out_date: date
+    note: Optional[str] = None
+
+class PublicBookingResponse(BaseModel):
+    booking_id: int
+    room_number: str
+    room_type: str
+    full_name: str
+    phone: str
+    email: str
+    check_in_date: date
+    check_out_date: date
+    num_nights: int
+    total_price: float
+    status: str
+    message: str
+
+
+# ==========================================
+# SCHEMAS PHÒNG (cập nhật)
+# ==========================================
+class RoomUpdateByAdmin(BaseModel):
+    image_url: Optional[str] = None
+    description: Optional[str] = None
+    amenities: Optional[list[str]] = None  # ['WiFi', 'TV', 'Minibar']
+    type_name: Optional[str] = None
+    price_per_night: Optional[float] = None
+    type_description: Optional[str] = None
+
+# ==========================================
+# SCHEMAS PHÂN QUYỀN
+# ==========================================
+class RoleResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+class UserWithRoleResponse(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str] = None
+    role_id: int
+    role_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
+class ChangeUserRoleRequest(BaseModel):
+    role_id: int
+
+# ==========================================
+# SCHEMAS APPROVAL WORKFLOW
+# ==========================================
+class ApprovalRequestCreate(BaseModel):
+    action_type: str
+    target_id: Optional[int] = None
+    reason: Optional[str] = None
+
+class ApprovalRequestResponse(BaseModel):
+    id: int
+    requester_id: int
+    approver_id: Optional[int] = None
+    action_type: str
+    target_id: Optional[int] = None
+    reason: Optional[str] = None
+    status: str
+    note: Optional[str] = None
+    created_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
+class ApprovalDecisionRequest(BaseModel):
+    decision: str  # 'approved' or 'rejected'
+    note: Optional[str] = None

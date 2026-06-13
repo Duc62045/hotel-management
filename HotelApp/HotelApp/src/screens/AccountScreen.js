@@ -7,9 +7,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import apiClient from '../api/apiClient';
 
 const ROLE_LABEL = {
-    admin: 'Quản trị viên',
+    'super admin': 'Chủ khách sạn (Super Admin)',
+    admin: 'Quản trị viên (Admin)',
+    moderator: 'Điều phối viên (Moderator)',
     'lễ tân': 'Lễ tân',
     receptionist: 'Lễ tân',
+    customer: 'Khách hàng',
     guest: 'Khách hàng',
 };
 

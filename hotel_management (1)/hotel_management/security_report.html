@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Báo Cáo Chuyên Đề Bảo Mật: Phòng Thủ Theo Chiều Sâu & Bảo Mật Dữ Liệu Khách Hàng</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --bg-main: #f8fafc;
+            --bg-card: #ffffff;
+            --text-main: #0f172a;
+            --text-muted: #475569;
+            --border: #e2e8f0;
+            --code-bg: #1e293b;
+            --code-text: #f8fafc;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg-main: #0f172a;
+                --bg-card: #1e293b;
+                --text-main: #f8fafc;
+                --text-muted: #94a3b8;
+                --border: #334155;
+                --code-bg: #0f172a;
+            }
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-main);
+            color: var(--text-main);
+            line-height: 1.6;
+            padding: 2rem 1rem;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 2px solid var(--border);
+        }
+
+        h1 {
+            font-size: 2.25rem;
+            font-weight: 700;
+            color: var(--primary);
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+        }
+
+        h2 {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-top: 2.5rem;
+            margin-bottom: 1.25rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid var(--border);
+            color: var(--primary);
+        }
+
+        h3 {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            color: var(--text-muted);
+        }
+
+        ul, ol {
+            margin-bottom: 1rem;
+            margin-left: 1.5rem;
+            color: var(--text-muted);
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 0.75rem;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.375rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-success { background: rgba(16, 185, 129, 0.1); color: var(--success); }
+        .badge-warning { background: rgba(245, 158, 11, 0.1); color: var(--warning); }
+        .badge-danger { background: rgba(239, 68, 68, 0.1); color: var(--danger); }
+        .badge-primary { background: rgba(37, 99, 235, 0.1); color: var(--primary); }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1.5rem 0;
+            font-size: 0.9rem;
+        }
+
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background-color: rgba(37, 99, 235, 0.05);
+            font-weight: 600;
+        }
+
+        pre {
+            background-color: var(--code-bg);
+            color: var(--code-text);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            margin: 1rem 0;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.9rem;
+            background-color: rgba(0,0,0,0.05);
+            padding: 0.1rem 0.3rem;
+            border-radius: 0.25rem;
+        }
+
+        pre code {
+            background-color: transparent;
+            padding: 0;
+            border-radius: 0;
+        }
+
+        .alert-section {
+            border-left: 4px solid var(--primary);
+            padding-left: 1rem;
+            margin: 1rem 0;
+        }
+
+        .timeline {
+            border-left: 2px solid var(--border);
+            padding-left: 1.5rem;
+            margin-left: 0.5rem;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 1.5rem;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: calc(-1.5rem - 6px);
+            top: 6px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--primary);
+        }
+
+        @media print {
+            body {
+                background: white;
+                color: black;
+                padding: 0;
+            }
+            .card {
+                page-break-inside: avoid;
+                border: 1px solid #ccc;
+                box-shadow: none;
+            }
+            pre {
+                background: #f1f5f9;
+                color: #0f172a;
+                border: 1px solid #ccc;
+            }
+            h2, h3 {
+                page-break-after: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>BÁO CÁO CHUYÊN ĐỀ BẢO MẬT HỆ THỐNG</h1>
+            <p class="subtitle">Phòng Thủ Theo Chiều Sâu (Defense in Depth) & Bảo Mật Dữ Liệu Khách Hàng (PII Encryption)</p>
+            <p style="font-size: 0.9rem; margin-top: 0.5rem;">Môn học: An toàn thông tin | Trường Đại học Việt Nhật (VJU)</p>
+        </header>
+
+        <!-- PHẦN 1 -->
+        <section class="card">
+            <h2>PHẦN I: BẢO MẬT DỮ LIỆU NHẠY CẢM PII (HƯỚNG A)</h2>
+            <p>Để tuân thủ các quy định bảo vệ dữ liệu cá nhân (GDPR, Nghị định 13/2023/NĐ-CP), toàn bộ thông tin nhạy cảm của khách hàng như Email, Số điện thoại, CCCD phải được bảo vệ nghiêm ngặt trong cơ sở dữ liệu.</p>
+            
+            <h3>1. Mã hóa Đối xứng (Fernet/AES-128-CBC)</h3>
+            <p>Dữ liệu gốc (Plaintext) như Số điện thoại, CCCD được mã hóa trước khi ghi vào Database bằng thuật toán mã hóa đối xứng Fernet đảm bảo tính bí mật:</p>
+            <ul>
+                <li>Khóa mã hóa <code>FERNET_KEY</code> được lưu riêng biệt trong biến môi trường hệ thống.</li>
+                <li>Dữ liệu lưu trữ trong DB hiển thị dưới dạng chuỗi Base64 đã mã hóa.</li>
+            </ul>
+
+            <h3>2. HMAC Blind Index (Chỉ mục mờ bảo mật)</h3>
+            <p>Việc mã hóa khiến chúng ta không thể thực hiện truy vấn trực tiếp dạng <code>SELECT WHERE email = ...</code>. Để giải quyết, hệ thống áp dụng cơ chế <strong>HMAC Blind Index</strong>:</p>
+            <ol>
+                <li>Khi người dùng nhập Email, hệ thống băm giá trị thô bằng thuật toán <strong>HMAC-SHA256</strong> kèm khóa bí mật <code>BLIND_INDEX_KEY</code>.</li>
+                <li>Kết quả băm (Blind Index) được lưu trữ tại cột <code>email_hash</code> trong DB.</li>
+                <li>Khi tìm kiếm/đăng nhập, hệ thống băm tham số đầu vào và so sánh trực tiếp với cột <code>email_hash</code> mà không cần giải mã dữ liệu gốc.</li>
+            </ol>
+            <pre><code># Hàm tạo Blind Index trong security.py
+def get_sha256_hash(value: str) -> str:
+    if not value:
+        return ""
+    return hmac.new(
+        BLIND_INDEX_KEY.encode(),
+        value.lower().strip().encode(),
+        hashlib.sha256
+    ).hexdigest()</code></pre>
+        </section>
+
+        <!-- PHẦN 2 -->
+        <section class="card">
+            <h2>PHẦN II: MA TRẬN PHÒNG THỦ & KẾT QUẢ THỰC NGHIỆM (HƯỚNG B)</h2>
+            <p>Hệ thống đã trải qua đợt kiểm thử xâm nhập (Penetration Testing) cô lập hoàn toàn đối với 9 kịch bản tấn công thực tế từ bộ công cụ Red Team:</p>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>STT</th>
+                        <th>Kịch Bản Tấn Công</th>
+                        <th>Lớp Phòng Thủ Chính</th>
+                        <th>Trạng Thái</th>
+                        <th>HTTP Code</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>1</td>
+                        <td>Brute Force 1 User</td>
+                        <td>Account Lockout (DB Stateful)</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>401 &rarr; 403</td>
+                    </tr>
+                    <tr>
+                        <td>2</td>
+                        <td>Password Spraying</td>
+                        <td>Rate Limiting (IP-based)</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>401 &rarr; 429</td>
+                    </tr>
+                    <tr>
+                        <td>3</td>
+                        <td>Volume Attack (DoS)</td>
+                        <td>Rate Limiting (Middleware)</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>429</td>
+                    </tr>
+                    <tr>
+                        <td>4</td>
+                        <td>Bypass Rate Limit via Header</td>
+                        <td>Active Log Parser / Anomaly Detection</td>
+                        <td><span class="badge badge-warning">Phát hiện</span></td>
+                        <td>401 (Critical alert)</td>
+                    </tr>
+                    <tr>
+                        <td>5</td>
+                        <td>Low and Slow Brute Force</td>
+                        <td>Account Lockout (DB Stateful)</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>403</td>
+                    </tr>
+                    <tr>
+                        <td>6</td>
+                        <td>Credential Stuffing</td>
+                        <td>Lockout & Timing Equalization</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>401 / 403</td>
+                    </tr>
+                    <tr>
+                        <td>7</td>
+                        <td>SQL Injection Bypass</td>
+                        <td>Parameterized Query (SQLAlchemy)</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>401</td>
+                    </tr>
+                    <tr>
+                        <td>8</td>
+                        <td>Log Injection (CRLF)</td>
+                        <td>Input Sanitizer (CRLF Removal)</td>
+                        <td><span class="badge badge-success">Chặn tốt</span></td>
+                        <td>401 (Sanitized)</td>
+                    </tr>
+                    <tr>
+                        <td>9</td>
+                        <td>Account Lockout DoS</td>
+                        <td>Risk Warning / Detection Alert</td>
+                        <td><span class="badge badge-danger">Bị Lockout</span></td>
+                        <td>403 (Đề xuất CAPTCHA)</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- PHẦN TỪNG KỊCH BẢN CHI TIẾT -->
+        <h2>CHI TIẾT 9 KỊCH BẢN TẤN CÔNG & TIẾN TRÌNH NHẬT KÝ (LOG TIMELINE)</h2>
+
+        <!-- Kịch bản 1 -->
+        <div class="card">
+            <h3>Kịch bản 1: Brute Force 1 User</h3>
+            <p><strong>Cách thức tấn công:</strong> Gửi liên tiếp nhiều mật khẩu sai nhắm vào duy nhất tài khoản <code>letan_test</code> từ 1 IP để dò mật khẩu.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Chiếm quyền tài khoản (Account Takeover), rò rỉ dữ liệu vận hành.</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Khóa tài khoản tạm thời 15 phút sau 5 lần nhập sai liên tiếp thông qua bộ đếm lưu trong CSDL.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1 (Tích lũy):</strong> Tin tặc gửi 4 lần sai mật khẩu liên tiếp:</p>
+                    <pre><code>2026-06-11 18:30:52 | WARNING | LOGIN_FAILED | IP=127.0.0.1 | user=letan_test
+2026-06-11 18:30:53 | WARNING | LOGIN_FAILED | IP=127.0.0.1 | user=letan_test</code></pre>
+                </div>
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 2 (Kích hoạt):</strong> Ở lần thứ 5, bộ đếm lỗi chạm ngưỡng. Hệ thống khóa tài khoản:</p>
+                    <pre><code>2026-06-11 18:30:54 | WARNING | ACCOUNT_LOCKED | IP=127.0.0.1 | user=letan_test | Khóa 15 phút sau 5 lần sai.</code></pre>
+                </div>
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 3 (Chặn):</strong> Lần thứ 6 gửi lên bị chặn trực tiếp ở cổng kiểm tra DB:</p>
+                    <pre><code>2026-06-11 18:30:54 | WARNING | ACCOUNT_LOCKED | IP=127.0.0.1 | user=letan_test | Tài khoản vẫn đang bị khóa. Còn ~15 phút.</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 2 -->
+        <div class="card">
+            <h3>Kịch bản 2: Password Spraying</h3>
+            <p><strong>Cách thức tấn công:</strong> Dùng 1 mật khẩu phổ biến <code>Password123@</code> quét qua hàng loạt tài khoản để né tránh bộ đếm lockout của từng user.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Xâm nhập diện rộng vào các tài khoản có mật khẩu yếu.</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Giới hạn tần suất IP (SlowAPI) tối đa 10 request đăng nhập/phút từ cùng một IP nguồn.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1 (Quét):</strong> Gửi đăng nhập sai lần lượt đến các user sạch:</p>
+                    <pre><code>2026-06-11 18:30:54 | WARNING | LOGIN_FAILED | IP=127.0.0.1 | user=admin_test
+2026-06-11 18:30:55 | WARNING | LOGIN_FAILED | IP=127.0.0.1 | user=customer_test</code></pre>
+                </div>
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 2 (Chặn):</strong> Quota đăng nhập từ IP <code>127.0.0.1</code> cạn kiệt. Request thứ 11 trở đi bị SlowAPI chặn từ middleware. <strong>Không ghi thêm bất kỳ dòng log nào</strong> để chống log bloating.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 3 -->
+        <div class="card">
+            <h3>Kịch bản 3: Volume Attack (DoS Rate Limit)</h3>
+            <p><strong>Cách thức tấn công:</strong> Bắn hàng loạt request đăng nhập cực nhanh nhằm ép CPU tính toán Bcrypt liên tục dẫn tới treo server.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Từ chối dịch vụ toàn hệ thống (Application DoS).</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Rate Limiter Middleware chặn ngay lập tức các yêu cầu vi phạm ở tầng định tuyến mạng trước khi chạm DB/Bcrypt.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="alert-section">
+                <p><strong>Trạng thái Log:</strong> Không ghi log kiểm toán.</p>
+                <p><strong>Giải thích:</strong> Vì request bị loại bỏ ngay tại tầng HTTP (HTTP 429), luồng logic đăng nhập của backend hoàn toàn không hoạt động, bảo vệ CPU máy chủ an toàn.</p>
+            </div>
+        </div>
+
+        <!-- Kịch bản 4 -->
+        <div class="card">
+            <h3>Kịch bản 4: Bypass Rate Limit via X-Forwarded-For</h3>
+            <p><strong>Cách thức tấn công:</strong> Giả mạo IP trong header <code>X-Forwarded-For</code> để đánh lừa bộ đếm Rate Limiter.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Vô hiệu hóa Rate Limit thô.</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Active Log Parser quét log định kỳ, phát hiện 1 user bị đăng nhập sai từ nhiều IP khác nhau.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1 (Bypass & Log):</strong> 14 request gửi lên mang 14 IP khác nhau đều vượt Rate Limit và ghi vết vào log:</p>
+                    <pre><code>2026-06-11 18:30:56 | WARNING | LOGIN_FAILED | IP=192.168.1.1 | user=some_user
+2026-06-11 18:30:56 | WARNING | LOGIN_FAILED | IP=192.168.1.2 | user=some_user</code></pre>
+                </div>
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 2 (Cảnh báo):</strong> Log Parser quét qua và gửi cảnh báo mức <strong>CRITICAL</strong>:</p>
+                    <pre><code>DISTRIBUTED_BRUTE_FORCE | Target: some_user | IPs: ['192.168.1.1', '192.168.1.2', ...]</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 5 -->
+        <div class="card">
+            <h3>Kịch bản 5: Low and Slow Brute Force</h3>
+            <p><strong>Cách thức tấn công:</strong> Dò mật khẩu chậm và xoay IP liên tục nhằm tránh các hệ thống phát hiện tần suất mạng.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Dò quét thành công tài khoản quan trọng mà không kích hoạt Rate Limit.</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Cờ khóa tài khoản lưu trữ tập trung ở CSDL (Stateful Lockout) chặn đứng mọi nỗ lực đăng nhập của tài khoản đang bị khóa.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1 (Chặn theo trạng thái DB):</strong> Bất kể đổi IP hay giãn cách thời gian, hệ thống từ chối xác thực mật khẩu vì tài khoản đang khóa:</p>
+                    <pre><code>2026-06-11 18:31:00 | WARNING | ACCOUNT_LOCKED | IP=192.168.5.1 | user=letan_test | Tài khoản vẫn đang bị khóa.
+2026-06-11 18:31:01 | WARNING | ACCOUNT_LOCKED | IP=192.168.5.2 | user=letan_test | Tài khoản vẫn đang bị khóa.</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 6 -->
+        <div class="card">
+            <h3>Kịch bản 6: Credential Stuffing</h3>
+            <p><strong>Cách thức tấn công:</strong> Đẩy danh sách credential rò rỉ từ các vụ hack bên ngoài để dò tài khoản trùng mật khẩu.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Chiếm đoạt tài khoản hàng loạt.</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Hàm băm dummy Bcrypt cho tài khoản không tồn tại để che giấu thời gian phản hồi (chống Timing Attack).</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1 (Nhồi thông tin):</strong> Log ghi nhận thất bại của tài khoản rác (với thời gian trễ Bcrypt mô phỏng chuẩn):</p>
+                    <pre><code>2026-06-11 18:31:02 | WARNING | LOGIN_FAILED | IP=192.168.6.0 | user=user1@vju.vn
+2026-06-11 18:31:02 | WARNING | ACCOUNT_LOCKED | IP=192.168.6.1 | user=letan_test | Tài khoản vẫn đang bị khóa.</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 7 -->
+        <div class="card">
+            <h3>Kịch bản 7: SQL Injection Bypass Attempt</h3>
+            <p><strong>Cách thức tấn công:</strong> Tiêm payload SQL <code>' OR '1'='1</code> vào trường đăng nhập để làm sai lệch logic câu truy vấn DB.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Vượt qua xác thực đăng nhập trực tiếp (Auth Bypass).</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Parameterized Query của SQLAlchemy và băm HMAC Blind Index trước khi truy vấn biến payload thành một chuỗi băm vô hại.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1:</strong> Log ghi nhận chuỗi SQLi như một chuỗi tên đăng nhập thường không hợp lệ:</p>
+                    <pre><code>2026-06-11 18:31:03 | WARNING | LOGIN_FAILED | IP=192.168.7.1 | user=' OR '1'='1</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 8 -->
+        <div class="card">
+            <h3>Kịch bản 8: Log Injection (Poisoning)</h3>
+            <p><strong>Cách thức tấn công:</strong> Chèn ký tự xuống dòng <code>\r\n</code> để ghi khống các dòng nhật ký kiểm toán giả mạo.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Làm hỏng tính toàn vẹn của tệp nhật ký, đánh lừa quản trị viên khi điều tra sự cố.</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Hàm <code>sanitize_log_input</code> lọc bỏ toàn bộ ký tự ngắt dòng và cắt ngắn chuỗi ở mức 100 ký tự.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1:</strong> Payload xuống dòng bị ép dính vào dòng log cũ trên một dòng duy nhất:</p>
+                    <pre><code>2026-06-11 18:31:03 | WARNING | LOGIN_FAILED | IP=192.168.8.1 | user=hacker_user2026-06-11 15:30:00 | WARNING | LOGIN_SUCCESS | IP=8.8.8.8 | user=admin_test | Fake logge</code></pre>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kịch bản 9 -->
+        <div class="card">
+            <h3>Kịch bản 9: Account Lockout DoS</h3>
+            <p><strong>Cách thức tấn công:</strong> Cố tình nhập sai 5 lần tài khoản quản trị viên <code>admin_test</code> bằng các IP xoay vòng để khóa tài khoản của nạn nhân.</p>
+            <p><strong>Thiệt hại tiềm tàng:</strong> Chặn hoàn toàn quyền đăng nhập của quản trị viên thật sự (Từ chối dịch vụ người dùng).</p>
+            <p><strong>Biện pháp phòng thủ:</strong> Phát hiện hành vi khóa tài khoản bất thường qua Log Parser. Khuyến nghị nâng cấp lên CAPTCHA hoặc Exponential Backoff thay vì khóa cứng.</p>
+            <h4>Tiến trình nhật ký ghi nhận (Log Timeline):</h4>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 1 (Cố tình khóa):</strong> Nhập sai 3 lần từ các IP khác nhau nhắm vào admin:</p>
+                    <pre><code>2026-06-11 18:31:04 | WARNING | LOGIN_FAILED | IP=192.168.9.1 | user=admin_test
+2026-06-11 18:31:04 | WARNING | LOGIN_FAILED | IP=192.168.9.2 | user=admin_test</code></pre>
+                </div>
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 2 (Bị khóa):</strong> Ở lần thứ 5 tài khoản bị khóa cứng:</p>
+                    <pre><code>2026-06-11 18:31:05 | WARNING | ACCOUNT_LOCKED | IP=192.168.9.4 | user=admin_test | Khóa 15 phút sau 5 lần sai.</code></pre>
+                </div>
+                <div class="timeline-item">
+                    <p><strong>Giai đoạn 3 (Admin thật bị chặn):</strong> Quản trị viên nhập mật khẩu đúng từ IP sạch <code>192.168.9.99</code> vẫn bị chặn đứng:</p>
+                    <pre><code>2026-06-11 18:31:05 | WARNING | ACCOUNT_LOCKED | IP=192.168.9.99 | user=admin_test | Tài khoản vẫn đang bị khóa. Còn ~15 phút.</code></pre>
+                </div>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

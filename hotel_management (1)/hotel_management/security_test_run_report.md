@@ -1,4 +1,4 @@
-# Báo cáo Phân tích Chuyên sâu: Thực nghiệm 9 Kịch bản Tấn công & Giải pháp Phòng thủ theo Chiều sâu
+
 
 Báo cáo này trình bày chi tiết về mặt lý thuyết học thuật lẫn thực nghiệm thực tế đối với 9 kiểu tấn công bảo mật phổ biến nhắm vào cổng xác thực (Authentication API) của hệ thống. Mỗi kịch bản được phân tích toàn diện theo 4 trục nội dung chính: **Cách thức tấn công**, **Hành động mô phỏng**, **Thiệt hại tiềm tàng (Damage)**, **Biện pháp phòng thủ áp dụng**, và **Nhật ký Sự kiện Tấn công & Phòng thủ (Attack & Defense Log Timeline)**.
 

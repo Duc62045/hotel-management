@@ -126,10 +126,11 @@ def ensure_auth_columns(db: Session) -> None:
 
 def ensure_roles(db: Session) -> None:
     roles = [
-        ("Admin", "Quản trị viên hệ thống"),
-        ("Lễ tân", "Nhân viên lễ tân"),
+        ("Super Admin", "Chủ khách sạn — quyền cao nhất"),
+        ("Admin", "Quản lý hệ thống — quản trị toàn bộ"),
+        ("Moderator", "Điều phối viên — quản lý ca, duyệt yêu cầu"),
+        ("Lễ tân", "Nhân viên lễ tân — xử lý booking"),
         ("Customer", "Khách hàng đặt phòng"),
-        ("Moderator", "Điều phối viên khách sạn"),
     ]
     for role_name, desc in roles:
         existing = db.query(models.Role).filter(models.Role.name == role_name).first()
@@ -168,6 +169,46 @@ def ensure_booking_payment_column(db: Session) -> None:
     if not exists:
         db.execute(text("ALTER TABLE bookings ADD COLUMN payment_status VARCHAR(20) DEFAULT 'unpaid'"))
     db.commit()
+
+
+def ensure_room_columns(db: Session) -> None:
+    """Add image_url, description, amenitiesjson columns to rooms if not exist."""
+    for col_name, col_def in [
+        ("image_url", "VARCHAR(500) NULL"),
+        ("description", "TEXT NULL"),
+        ("amenitiesjson", "TEXT NULL"),
+    ]:
+        exists = db.execute(
+            text("""
+                SELECT COUNT(*) FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = 'rooms'
+                  AND COLUMN_NAME = :col_name
+            """),
+            {"col_name": col_name},
+        ).scalar()
+        if not exists:
+            db.execute(text(f"ALTER TABLE rooms ADD COLUMN {col_name} {col_def}"))
+    db.commit()
+    # Create approval_requests table if not exists
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS approval_requests (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                requester_id INT NOT NULL,
+                approver_id INT NULL,
+                action_type VARCHAR(50) NOT NULL,
+                target_id INT NULL,
+                reason TEXT NULL,
+                status VARCHAR(20) DEFAULT 'pending',
+                note TEXT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                resolved_at DATETIME NULL
+            )
+        """))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def ensure_mock_bank_accounts(db: Session) -> None:
@@ -273,6 +314,7 @@ def on_startup() -> None:
         ensure_mock_bank_accounts(db)
         ensure_auth_columns(db)
         ensure_roles(db)
+        ensure_room_columns(db)
     finally:
         db.close()
 
@@ -693,33 +735,73 @@ def get_me(current_user: models.User = Depends(get_current_user), db: Session = 
         "role_name": user_role.name if user_role else "guest"
     }
 
-def get_current_admin(
-    current_user: models.User = Depends(get_current_user), 
+# ==========================================
+# PERMISSION HIERARCHY (5 cấp)
+# ==========================================
+ROLE_HIERARCHY = {
+    "super admin": 5,
+    "admin": 4,
+    "moderator": 3,
+    "lễ tân": 2,
+    "customer": 1,
+}
+
+def get_role_level(role_name: str) -> int:
+    return ROLE_HIERARCHY.get(role_name.lower().strip(), 0)
+
+def get_current_user_role(current_user: models.User, db: Session) -> str:
+    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
+    return user_role.name.lower().strip() if user_role else ""
+
+def get_current_super_admin(
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Hàm chặn: Chỉ cho phép Admin đi qua"""
-    # Tìm Role của user hiện tại trong Database
-    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
-    
-    # Ép tên role trong DB về chữ thường (.lower()) và so sánh với "admin"
-    if not user_role or user_role.name.lower() != "admin":
+    """Chỉ Chủ khách sạn (Super Admin) được phép."""
+    role_name = get_current_user_role(current_user, db)
+    if get_role_level(role_name) < 5:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Bạn không có quyền thực hiện hành động này. Yêu cầu quyền Admin."
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Yêu cầu quyền Chủ khách sạn (Super Admin)."
         )
     return current_user
 
-
-def get_current_staff(
-    current_user: models.User = Depends(get_current_user), 
+def get_current_admin(
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Hàm chặn: Chỉ cho phép Admin, Lễ tân hoặc Moderator đi qua"""
-    user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
-    if not user_role or user_role.name.lower() not in ["admin", "lễ tân", "moderator"]:
+    """Admin và Super Admin được phép."""
+    role_name = get_current_user_role(current_user, db)
+    if get_role_level(role_name) < 4:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Bạn không có quyền thực hiện hành động này. Yêu cầu quyền Nhân viên/Lễ tân/Moderator."
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Yêu cầu quyền Admin trở lên."
+        )
+    return current_user
+
+def get_current_manager(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Moderator, Admin, Super Admin được phép."""
+    role_name = get_current_user_role(current_user, db)
+    if get_role_level(role_name) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Yêu cầu quyền Moderator trở lên."
+        )
+    return current_user
+
+def get_current_staff(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Lễ tân, Moderator, Admin, Super Admin được phép."""
+    role_name = get_current_user_role(current_user, db)
+    if get_role_level(role_name) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Yêu cầu quyền Nhân viên (Lễ tân) trở lên."
         )
     return current_user
 
@@ -741,6 +823,146 @@ def approve_moderator(
     user.role_id = moderator_role.id
     db.commit()
     return {"message": f"Đã duyệt tài khoản '{user.username}' làm Moderator (Điều phối viên)."}
+
+# ==========================================
+# API QUẢN LÝ NGƯỜI DÙNG & PHÂN QUYỀN
+# ==========================================
+@app.get("/admin/users")
+def list_all_users(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_admin)
+):
+    """Admin+ xem danh sách tất cả người dùng kèm vai trò."""
+    users = db.query(models.User).all()
+    roles = {r.id: r.name for r in db.query(models.Role).all()}
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "full_name": u.full_name,
+            "role_id": u.role_id,
+            "role_name": roles.get(u.role_id, "unknown"),
+            "created_at": str(u.created_at) if u.created_at else None,
+        }
+        for u in users
+    ]
+
+@app.get("/admin/roles")
+def list_roles(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_admin)
+):
+    """Admin+ xem danh sách tất cả vai trò."""
+    return db.query(models.Role).all()
+
+@app.put("/admin/users/{user_id}/role")
+def change_user_role(
+    user_id: int,
+    payload: schemas.ChangeUserRoleRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_admin)
+):
+    """Admin thay đổi role người dùng. Super Admin mới được gán role Super Admin."""
+    target = db.query(models.User).filter(models.User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+
+    new_role = db.query(models.Role).filter(models.Role.id == payload.role_id).first()
+    if not new_role:
+        raise HTTPException(status_code=404, detail="Không tìm thấy vai trò.")
+
+    # Chỉ Super Admin mới được gán role Super Admin
+    current_role_name = get_current_user_role(current_user, db)
+    if new_role.name.lower() == "super admin" and get_role_level(current_role_name) < 5:
+        raise HTTPException(
+            status_code=403,
+            detail="Chỉ Chủ khách sạn mới được gán quyền Super Admin."
+        )
+
+    old_role_name = db.query(models.Role).filter(models.Role.id == target.role_id).first()
+    old_name = old_role_name.name if old_role_name else "?"
+    target.role_id = payload.role_id
+    db.commit()
+    return {
+        "message": f"Đã thay đổi quyền của '{target.username}' từ '{old_name}' → '{new_role.name}'.",
+        "user_id": user_id,
+        "new_role": new_role.name,
+    }
+
+@app.delete("/admin/users/{user_id}")
+def delete_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_admin)
+):
+    """Admin xóa người dùng (không thể xóa Super Admin)."""
+    target = db.query(models.User).filter(models.User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Không tìm thấy người dùng.")
+    if target.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Không thể xóa chính mình.")
+    target_role = db.query(models.Role).filter(models.Role.id == target.role_id).first()
+    if target_role and target_role.name.lower() == "super admin":
+        raise HTTPException(status_code=403, detail="Không thể xóa tài khoản Chủ khách sạn.")
+    db.delete(target)
+    db.commit()
+    return {"message": f"Đã xóa người dùng '{target.username}'."}
+
+# ==========================================
+# API APPROVAL WORKFLOW (Lễ tân → Moderator duyệt)
+# ==========================================
+@app.post("/staff/approval-requests")
+def create_approval_request(
+    payload: schemas.ApprovalRequestCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_staff)
+):
+    """Lễ tân tạo yêu cầu cần duyệt (vd: hủy phòng, đổi phòng)."""
+    req = models.ApprovalRequest(
+        requester_id=current_user.id,
+        action_type=payload.action_type,
+        target_id=payload.target_id,
+        reason=payload.reason,
+        status="pending",
+    )
+    db.add(req)
+    db.commit()
+    db.refresh(req)
+    return {"message": "Yêu cầu đã được gửi, đang chờ Moderator duyệt.", "request_id": req.id}
+
+@app.get("/manager/approval-requests")
+def list_pending_approvals(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_manager)
+):
+    """Moderator+ xem danh sách yêu cầu chờ duyệt."""
+    reqs = db.query(models.ApprovalRequest).filter(
+        models.ApprovalRequest.status == "pending"
+    ).order_by(models.ApprovalRequest.created_at.desc()).all()
+    return reqs
+
+@app.put("/manager/approval-requests/{request_id}")
+def decide_approval(
+    request_id: int,
+    payload: schemas.ApprovalDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_manager)
+):
+    """Moderator+ duyệt hoặc từ chối yêu cầu."""
+    if payload.decision not in ["approved", "rejected"]:
+        raise HTTPException(status_code=400, detail="decision phải là 'approved' hoặc 'rejected'.")
+    req = db.query(models.ApprovalRequest).filter(models.ApprovalRequest.id == request_id).first()
+    if not req:
+        raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu.")
+    if req.status != "pending":
+        raise HTTPException(status_code=400, detail="Yêu cầu này đã được xử lý rồi.")
+    req.status = payload.decision
+    req.approver_id = current_user.id
+    req.note = payload.note
+    req.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+    action_word = "Đã duyệt" if payload.decision == "approved" else "Đã từ chối"
+    return {"message": f"{action_word} yêu cầu #{request_id}."}
 
 # ==========================================
 # API QUẢN LÝ TRANG WEB (WEBSITES)
@@ -916,11 +1138,174 @@ def create_room(
     db.refresh(new_room)
     return new_room
 
+# ==========================================
+# API ADMIN QUẢN LÝ PHÒNG (ảnh + mô tả)
+# ==========================================
+@app.put("/admin/rooms/{room_id}")
+def admin_update_room(
+    room_id: int,
+    payload: schemas.RoomUpdateByAdmin,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_admin)
+):
+    """Admin/Super Admin cập nhật ảnh, mô tả, tiện nghi phòng."""
+    import json as _json
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phòng.")
+
+    if payload.image_url is not None:
+        room.image_url = payload.image_url
+    if payload.description is not None:
+        room.description = payload.description
+    if payload.amenities is not None:
+        room.amenitiesjson = _json.dumps(payload.amenities, ensure_ascii=False)
+
+    # Cập nhật RoomType nếu có
+    if any([payload.type_name, payload.price_per_night is not None, payload.type_description]):
+        room_type = db.query(models.RoomType).filter(models.RoomType.id == room.type_id).first()
+        if room_type:
+            if payload.type_name:
+                room_type.type_name = payload.type_name
+            if payload.price_per_night is not None:
+                room_type.price_per_night = payload.price_per_night
+            if payload.type_description:
+                room_type.description = payload.type_description
+
+    db.commit()
+    db.refresh(room)
+
+    return {
+        "message": f"Đã cập nhật thông tin phòng {room.room_number}.",
+        "room_id": room.id,
+        "room_number": room.room_number,
+        "image_url": room.image_url,
+        "description": room.description,
+        "amenities": _json.loads(room.amenitiesjson) if room.amenitiesjson else [],
+    }
+
+@app.get("/admin/rooms/{room_id}")
+def admin_get_room_detail(
+    room_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_staff)
+):
+    """Staff xem chi tiết phòng bao gồm ảnh, mô tả, tiện nghi."""
+    import json as _json
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phòng.")
+    room_type = db.query(models.RoomType).filter(models.RoomType.id == room.type_id).first()
+    return {
+        "id": room.id,
+        "room_number": room.room_number,
+        "type_id": room.type_id,
+        "status": room.status,
+        "image_url": room.image_url,
+        "description": room.description,
+        "amenities": _json.loads(room.amenitiesjson) if room.amenitiesjson else [],
+        "type_name": room_type.type_name if room_type else None,
+        "price_per_night": room_type.price_per_night if room_type else None,
+    }
+
 # 2. API Xem danh sách toàn bộ phòng (Không bắt buộc đăng nhập)
 @app.get("/rooms", response_model=list[schemas.RoomResponse])
 def get_all_rooms(db: Session = Depends(get_db)):
     rooms = db.query(models.Room).all()
     return rooms
+
+@app.get("/rooms/public")
+def get_public_rooms(db: Session = Depends(get_db)):
+    """Lấy danh sách phòng công khai kèm thông tin loại phòng - không cần đăng nhập."""
+    rooms = db.query(models.Room).all()
+    result = []
+    for room in rooms:
+        room_type = db.query(models.RoomType).filter(models.RoomType.id == room.type_id).first()
+        result.append({
+            "id": room.id,
+            "room_number": room.room_number,
+            "type_id": room.type_id,
+            "status": room.status,
+            "type_name": room_type.type_name if room_type else "Không rõ",
+            "price_per_night": room_type.price_per_night if room_type else 0,
+            "description": room.description if room.description else (room_type.description if room_type else ""),
+            "image_url": room.image_url,
+            "amenities": __import__('json').loads(room.amenitiesjson) if room.amenitiesjson else [],
+        })
+    return result
+
+# ==========================================
+# API ĐẶT PHÒNG CÔNG KHAI (không cần login)
+# ==========================================
+@app.post("/public/bookings")
+def public_create_booking(
+    booking: schemas.PublicBookingCreate,
+    db: Session = Depends(get_db),
+):
+    """Đặt phòng không cần đăng nhập - khách chỉ cần tên, SĐT, email."""
+    room = db.query(models.Room).filter(models.Room.id == booking.room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phòng này.")
+
+    if str(room.status).strip().lower() != "available":
+        raise HTTPException(status_code=400, detail="Phòng này hiện không trống!")
+
+    if booking.check_out_date <= booking.check_in_date:
+        raise HTTPException(status_code=400, detail="Ngày trả phòng phải sau ngày nhận phòng.")
+
+    today = date.today()
+    max_date = today + timedelta(days=60)
+    if booking.check_in_date < today:
+        raise HTTPException(status_code=400, detail="Ngày nhận phòng không thể ở quá khứ.")
+    if booking.check_in_date > max_date or booking.check_out_date > max_date:
+        raise HTTPException(status_code=400, detail="Không thể đặt phòng xa quá 2 tháng.")
+
+    num_nights = (booking.check_out_date - booking.check_in_date).days
+
+    room_type = db.query(models.RoomType).filter(models.RoomType.id == room.type_id).first()
+    if not room_type:
+        raise HTTPException(status_code=404, detail="Không tìm thấy thông tin loại phòng.")
+
+    calculated_price = num_nights * room_type.price_per_night
+
+    # Tìm hoặc tạo hồ sơ khách vãng lai (guest customer) không có user_id
+    # Dùng CCCD = "GUEST" + phone làm placeholder để tạo customer record
+    guest_customer = models.Customer(
+        user_id=None,
+        full_name=booking.full_name,
+        phone=booking.phone,
+        encrypted_id_card=f"GUEST:{booking.phone}",
+    )
+    db.add(guest_customer)
+    db.flush()  # lấy ID ngay mà chưa commit
+
+    new_booking = models.Booking(
+        customer_id=guest_customer.id,
+        room_id=booking.room_id,
+        check_in_date=booking.check_in_date,
+        check_out_date=booking.check_out_date,
+        total_price=calculated_price,
+        status="pending",
+    )
+    db.add(new_booking)
+    room.status = "booked"
+    db.commit()
+    db.refresh(new_booking)
+
+    return {
+        "booking_id": new_booking.id,
+        "room_number": room.room_number,
+        "room_type": room_type.type_name,
+        "full_name": booking.full_name,
+        "phone": booking.phone,
+        "email": booking.email,
+        "check_in_date": str(booking.check_in_date),
+        "check_out_date": str(booking.check_out_date),
+        "num_nights": num_nights,
+        "total_price": calculated_price,
+        "status": "pending",
+        "message": f"Đặt phòng thành công! Mã đặt phòng của bạn là #{new_booking.id}",
+    }
 
 # ==========================================
 # API ĐẶT PHÒNG (BOOKINGS)

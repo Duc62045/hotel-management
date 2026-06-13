@@ -28,7 +28,7 @@ export default function RoomListScreen({ navigation }) {
     const fetchRooms = async () => {
         setLoading(true);
         try {
-            const res = await apiClient.get('/rooms');
+            const res = await apiClient.get('/rooms/public');
             setRooms(res.data);
         } catch {
             Alert.alert('Lỗi', 'Không thể tải danh sách phòng');
@@ -78,7 +78,7 @@ export default function RoomListScreen({ navigation }) {
     const handleLogout = async () => {
         await AsyncStorage.removeItem('token');
         await AsyncStorage.removeItem('role');
-        navigation.replace('Login');
+        navigation.replace('Landing');
     };
 
     const renderRoom = ({ item }) => (
@@ -104,6 +104,23 @@ export default function RoomListScreen({ navigation }) {
                         )}
                     </TouchableOpacity>
                 )}
+                <TouchableOpacity
+                    style={styles.editButton}
+                    onPress={() => navigation.navigate('RoomEdit', {
+                        room: {
+                            id: item.id,
+                            room_number: item.room_number,
+                            type_id: item.type_id,
+                            image_url: item.image_url || null,
+                            description: item.description || '',
+                            amenities: item.amenities || [],
+                            type_name: item.type_name || '',
+                            price_per_night: item.price_per_night || 0,
+                        }
+                    })}
+                >
+                    <Text style={styles.editButtonText}>✏️</Text>
+                </TouchableOpacity>
             </View>
         </View>
     );
@@ -115,10 +132,19 @@ export default function RoomListScreen({ navigation }) {
                     style={styles.statsButton}
                     onPress={() => navigation.navigate('Statistics')}
                 >
-                    <Text style={styles.statsButtonText}>Xem thống kê →</Text>
+                    <Text style={styles.statsButtonText}>📊 Thống kê</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={() => navigation.navigate('Account')}>
-                    <Text style={styles.accountLink}>Tài khoản</Text>
+                <TouchableOpacity
+                    style={styles.statsButton}
+                    onPress={() => navigation.navigate('UserManagement')}
+                >
+                    <Text style={styles.statsButtonText}>👥 Nhân viên</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                    style={styles.statsButton}
+                    onPress={() => navigation.navigate('Approvals')}
+                >
+                    <Text style={styles.statsButtonText}>⚡ Duyệt</Text>
                 </TouchableOpacity>
                 <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
                     <Text style={styles.logoutText}>Đăng xuất</Text>
@@ -161,7 +187,7 @@ export default function RoomListScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
-    container: { flex: 1, padding: 16, backgroundColor: '#f5f5f5' },
+    container: { flex: 1, padding: 16, backgroundColor: '#f0f4ff' },
     headerRow: {
         flexDirection: 'row',
         justifyContent: 'space-between',
@@ -230,4 +256,14 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     cleanButtonText: { color: '#fff', fontSize: 12, fontWeight: '600' },
+    editButton: {
+        backgroundColor: '#f59e0b',
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 6,
+        minWidth: 80,
+        alignItems: 'center',
+        marginTop: 4,
+    },
+    editButtonText: { color: '#fff', fontSize: 12, fontWeight: '600' },
 });
