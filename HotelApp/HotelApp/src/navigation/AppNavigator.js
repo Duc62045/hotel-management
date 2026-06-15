@@ -26,10 +26,18 @@ import StatisticsScreen from '../screens/admin/StatisticsScreen';
 import RoomEditScreen from '../screens/admin/RoomEditScreen';
 import UserManagementScreen from '../screens/admin/UserManagementScreen';
 import ApprovalScreen from '../screens/admin/ApprovalScreen';
+import NightAuditScreen from '../screens/admin/NightAuditScreen';
+import AuditLogScreen from '../screens/admin/AuditLogScreen';
 
 // Receptionist screens
 import CustomerScreen from '../screens/receptionist/CustomerScreen';
 import BookingScreen from '../screens/receptionist/BookingScreen';
+
+// Housekeeping screens
+import HousekeepingScreen from '../screens/housekeeping/HousekeepingScreen';
+
+// Accountant screens
+import AccountantScreen from '../screens/accountant/AccountantScreen';
 
 // Guest screens
 import MyProfileScreen from '../screens/guest/MyProfileScreen';
@@ -94,10 +102,18 @@ export default function AppNavigator() {
                 <Stack.Screen name="RoomEdit" component={RoomEditScreen} options={{ title: 'Chỉnh sửa phòng' }} />
                 <Stack.Screen name="UserManagement" component={UserManagementScreen} options={{ title: 'Quản lý người dùng' }} />
                 <Stack.Screen name="Approvals" component={ApprovalScreen} options={{ title: 'Duyệt yêu cầu' }} />
+                <Stack.Screen name="NightAudit" component={NightAuditScreen} options={{ title: 'Night Audit — Chốt sổ', headerStyle: { backgroundColor: '#1e293b' }, headerTintColor: '#fff' }} />
+                <Stack.Screen name="AuditLog" component={AuditLogScreen} options={{ title: 'Nhật ký hành động', headerStyle: { backgroundColor: '#1e3a5f' }, headerTintColor: '#fff' }} />
 
                 {/* Lễ tân */}
                 <Stack.Screen name="Customer" component={CustomerScreen} options={{ title: 'Quản lý khách hàng' }} />
                 <Stack.Screen name="Booking" component={BookingScreen} options={{ title: 'Đặt phòng' }} />
+
+                {/* Housekeeping */}
+                <Stack.Screen name="Housekeeping" component={HousekeepingScreen} options={{ headerShown: false }} />
+
+                {/* Kế toán */}
+                <Stack.Screen name="Accountant" component={AccountantScreen} options={{ headerShown: false }} />
 
                 {/* Khách hàng (có tài khoản) */}
                 <Stack.Screen name="MyProfile" component={MyProfileScreen} options={{ title: 'Hồ sơ cá nhân' }} />

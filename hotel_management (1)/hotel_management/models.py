@@ -8,6 +8,7 @@ class Role(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String(50), unique=True, nullable=False)
     description = Column(String(255))
+    discount_threshold = Column(Float, default=0.0)  # % giảm giá tối đa cho phép (0.05 = 5%)
     
     # Quan hệ 1-nhiều với bảng users
     users = relationship("User", back_populates="role")
@@ -57,9 +58,6 @@ class Customer(Base):
     encrypted_id_card = Column(Text, nullable=False) # CCCD mã hóa
     created_at = Column(TIMESTAMP, server_default=func.now())
 
-# Đảm bảo ở đầu file bạn đã có các import này:
-from sqlalchemy import Column, Integer, String
-# (Không cần import Float nữa vì bảng của bạn không lưu giá tiền ở đây)
 
 class Room(Base):
     __tablename__ = "rooms"
@@ -137,3 +135,50 @@ class ApprovalRequest(Base):
     note = Column(Text, nullable=True)
     created_at = Column(DateTime, default=func.now())
     resolved_at = Column(DateTime, nullable=True)
+
+
+class AuditLog(Base):
+    """Nhật ký hành động — ghi lại mọi thay đổi quan trọng trong hệ thống."""
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # ai thực hiện
+    username = Column(String(50), nullable=True)                        # tên đăng nhập lưu nhanh
+    action = Column(String(100), nullable=False)                        # hành động (CANCEL_BOOKING, CHANGE_ROOM_STATUS...)
+    entity_type = Column(String(50), nullable=True)                     # loại đối tượng (booking, room, user...)
+    entity_id = Column(Integer, nullable=True)                          # ID đối tượng bị thay đổi
+    old_value = Column(Text, nullable=True)                             # giá trị cũ (JSON string)
+    new_value = Column(Text, nullable=True)                             # giá trị mới (JSON string)
+    reason = Column(Text, nullable=True)                                # lý do thay đổi
+    ip_address = Column(String(50), nullable=True)                      # IP người thực hiện
+    created_at = Column(DateTime, default=func.now())
+
+
+class NightAuditSession(Base):
+    """Phiên chốt sổ ngày (Night Audit) — khóa dữ liệu tài chính sau khi chốt."""
+    __tablename__ = "night_audit_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    audit_date = Column(Date, unique=True, nullable=False)  # ngày kinh doanh đã chốt
+    status = Column(String(20), default="closed")           # 'closed'
+    closed_by_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # ai thực hiện chốt
+    closed_by_username = Column(String(50), nullable=True)   # tên đăng nhập lưu nhanh
+    total_revenue = Column(Float, default=0.0)               # doanh thu ngày đó
+    total_bookings_closed = Column(Integer, default=0)       # số booking checked_out trong ngày
+    notes = Column(Text, nullable=True)                      # ghi chú
+    closed_at = Column(DateTime, default=func.now())
+
+
+class WorkShift(Base):
+    """Ca làm việc của nhân viên lễ tân — kiểm soát quyền thu tiền theo ca."""
+    __tablename__ = "work_shifts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # nhân viên
+    username = Column(String(50), nullable=True)                        # tên đăng nhập
+    shift_date = Column(Date, nullable=False)                           # ngày làm việc
+    opened_at = Column(DateTime, default=func.now())                    # giờ mở ca
+    closed_at = Column(DateTime, nullable=True)                         # giờ đóng ca (None = ca đang mở)
+    cash_collected = Column(Float, default=0.0)                         # tổng tiền mặt thu trong ca
+    status = Column(String(20), default="open")                         # 'open' hoặc 'closed'
+    notes = Column(Text, nullable=True)                                 # ghi chú khi bàn giao

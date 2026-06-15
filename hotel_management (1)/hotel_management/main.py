@@ -21,6 +21,8 @@ from sqlalchemy import func
 import models
 import schemas
 import security
+import permissions as perms
+from permissions import P, log_audit_action, check_night_audit_lock, validate_discount
 from database import engine, get_db, SessionLocal
 
 from fastapi.security import OAuth2PasswordRequestForm
@@ -125,18 +127,111 @@ def ensure_auth_columns(db: Session) -> None:
 
 
 def ensure_roles(db: Session) -> None:
+    # (role_name, description, discount_threshold)
     roles = [
-        ("Super Admin", "Chủ khách sạn — quyền cao nhất"),
-        ("Admin", "Quản lý hệ thống — quản trị toàn bộ"),
-        ("Moderator", "Điều phối viên — quản lý ca, duyệt yêu cầu"),
-        ("Lễ tân", "Nhân viên lễ tân — xử lý booking"),
-        ("Customer", "Khách hàng đặt phòng"),
+        ("Super Admin", "Chủ khách sạn — quyền cao nhất",    1.0),
+        ("Admin",       "Quản lý hệ thống — quản trị toàn bộ", 1.0),
+        ("Moderator",   "Điều phối viên — quản lý ca, duyệt yêu cầu", 0.20),
+        ("Lễ tân",      "Nhân viên lễ tân — xử lý booking",    0.05),
+        ("Housekeeping","Nhân viên buồng phòng — cập nhật trạng thái phòng", 0.0),
+        ("Kế toán",     "Kế toán — xem báo cáo tài chính, chốt sổ", 0.0),
+        ("Customer",    "Khách hàng đặt phòng",                 0.0),
     ]
-    for role_name, desc in roles:
+    for role_name, desc, discount in roles:
         existing = db.query(models.Role).filter(models.Role.name == role_name).first()
         if not existing:
-            db.add(models.Role(name=role_name, description=desc))
+            db.add(models.Role(name=role_name, description=desc, discount_threshold=discount))
+        else:
+            # Cập nhật discount_threshold nếu chưa có
+            try:
+                if existing.discount_threshold is None:
+                    existing.discount_threshold = discount
+            except Exception:
+                pass
     db.commit()
+
+
+def ensure_new_hms_tables(db: Session) -> None:
+    """Tạo các bảng mới cho RBAC nâng cao nếu chưa tồn tại."""
+    # Bảng audit_log
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NULL,
+                username VARCHAR(50) NULL,
+                action VARCHAR(100) NOT NULL,
+                entity_type VARCHAR(50) NULL,
+                entity_id INT NULL,
+                old_value TEXT NULL,
+                new_value TEXT NULL,
+                reason TEXT NULL,
+                ip_address VARCHAR(50) NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_audit_user (user_id),
+                INDEX idx_audit_action (action),
+                INDEX idx_audit_entity (entity_type, entity_id),
+                INDEX idx_audit_created (created_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # Bảng night_audit_sessions
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS night_audit_sessions (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                audit_date DATE NOT NULL UNIQUE,
+                status VARCHAR(20) DEFAULT 'closed',
+                closed_by_id INT NULL,
+                closed_by_username VARCHAR(50) NULL,
+                total_revenue FLOAT DEFAULT 0.0,
+                total_bookings_closed INT DEFAULT 0,
+                notes TEXT NULL,
+                closed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # Bảng work_shifts
+    try:
+        db.execute(text("""
+            CREATE TABLE IF NOT EXISTS work_shifts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                username VARCHAR(50) NULL,
+                shift_date DATE NOT NULL,
+                opened_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                closed_at DATETIME NULL,
+                cash_collected FLOAT DEFAULT 0.0,
+                status VARCHAR(20) DEFAULT 'open',
+                notes TEXT NULL,
+                INDEX idx_shift_user_date (user_id, shift_date)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """))
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    # Thêm cột discount_threshold vào bảng roles nếu chưa có
+    exists = db.execute(
+        text("""
+            SELECT COUNT(*) FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'roles'
+              AND COLUMN_NAME = 'discount_threshold'
+        """)
+    ).scalar()
+    if not exists:
+        try:
+            db.execute(text("ALTER TABLE roles ADD COLUMN discount_threshold FLOAT DEFAULT 0.0"))
+            db.commit()
+        except Exception:
+            db.rollback()
 
 
 # ==========================================
@@ -313,7 +408,8 @@ def on_startup() -> None:
         ensure_booking_payment_column(db)
         ensure_mock_bank_accounts(db)
         ensure_auth_columns(db)
-        ensure_roles(db)
+        ensure_new_hms_tables(db)   # Tạo bảng audit_log, night_audit_sessions, work_shifts
+        ensure_roles(db)            # Seed roles mới: Housekeeping, Kế toán
         ensure_room_columns(db)
     finally:
         db.close()
@@ -736,14 +832,18 @@ def get_me(current_user: models.User = Depends(get_current_user), db: Session = 
     }
 
 # ==========================================
-# PERMISSION HIERARCHY (5 cấp)
+# PERMISSION HIERARCHY (cấp truy cập tổng thể)
+# Chú ý: Housekeeping và Kế toán cùng cấp 2 với Lễ tân
+# nhưng có permission khác nhau — dùng permissions.py để kiểm tra chi tiết
 # ==========================================
 ROLE_HIERARCHY = {
-    "super admin": 5,
-    "admin": 4,
-    "moderator": 3,
-    "lễ tân": 2,
-    "customer": 1,
+    "super admin":  5,
+    "admin":        4,
+    "moderator":    3,
+    "lễ tân":       2,
+    "housekeeping": 2,   # Ngang cấp nhưng quyền khác
+    "kế toán":      2,   # Ngang cấp nhưng quyền khác
+    "customer":     1,
 }
 
 def get_role_level(role_name: str) -> int:
@@ -802,6 +902,36 @@ def get_current_staff(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Yêu cầu quyền Nhân viên (Lễ tân) trở lên."
+        )
+    return current_user
+
+
+def get_current_housekeeping(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Housekeeping và tất cả role cấp trên được phép."""
+    role_name = get_current_user_role(current_user, db)
+    # Housekeeping có cấp 2 ngang Lễ tân — chấp nhận cả Housekeeping và cấp cao hơn
+    if get_role_level(role_name) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Yêu cầu quyền Housekeeping trở lên."
+        )
+    return current_user
+
+
+def get_current_accountant(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Kế toán và tất cả role cấp trên (Moderator, Admin, Super Admin) được phép."""
+    role_name = get_current_user_role(current_user, db)
+    allowed_roles = {"kế toán", "moderator", "admin", "super admin"}
+    if role_name not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Yêu cầu quyền Kế toán trở lên."
         )
     return current_user
 
@@ -1503,31 +1633,67 @@ def check_out_booking(booking_id: int, db: Session = Depends(get_db), current_us
     return {"message": "Trả phòng thành công! Phòng đã được chuyển sang trạng thái dọn dẹp."}
 
 # ========================================================
-# CẬP NHẬT CHUẨN: API HỦY ĐƠN ĐẶT PHÒNG TRỰC TIẾP (CANCEL)
+# CẬP NHẬT CHUẨN: API HỦY ĐƠN ĐẶT PHÒNG (CANCEL) — v2
+# Nâng cấp: Night Audit Lock + Audit Trail
 # ========================================================
+class CancelBookingRequest(BaseModel):
+    reason: Optional[str] = None  # Lý do hủy (bắt buộc đối với Admin)
+
 @app.put("/bookings/{booking_id}/cancel")
-def cancel_booking(booking_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+def cancel_booking(
+    booking_id: int,
+    payload: CancelBookingRequest = CancelBookingRequest(),
+    request: Request = None,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
     booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
     if not booking:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn đặt phòng")
-        
+
     customer = db.query(models.Customer).filter(models.Customer.id == booking.customer_id).first()
     user_role = db.query(models.Role).filter(models.Role.id == current_user.role_id).first()
-    is_staff = user_role and user_role.name.lower() in ["admin", "lễ tân", "moderator"]
+    role_name = user_role.name.lower().strip() if user_role else ""
+    is_staff = role_name in ["admin", "super admin", "lễ tân", "moderator"]
+
     if (not customer or customer.user_id != current_user.id) and not is_staff:
         raise HTTPException(status_code=403, detail="Bạn không có quyền hủy đơn đặt phòng này.")
 
-    # Cho phép hủy khi đơn hàng chưa nhận phòng (đang pending hoặc confirmed)
+    # 🔒 Night Audit Lock: Kiểm tra ngày check-in đã bị chốt sổ chưa
+    # Lễ tân không thể hủy booking của ngày đã Night Audit
+    if booking.check_in_date:
+        check_night_audit_lock(booking.check_in_date, db)
+
+    # Cho phép hủy khi đơn chưa nhận phòng (pending hoặc confirmed)
     if booking.status not in ['pending', 'confirmed']:
         raise HTTPException(status_code=400, detail=f"Không thể hủy đơn này vì trạng thái hiện tại là: {booking.status}")
+
+    # Lưu giá trị cũ để ghi audit log
+    old_status = booking.status
+    old_price = booking.total_price
 
     # 1. Đổi trạng thái đơn sang 'cancelled'
     booking.status = "cancelled"
 
-    # 2. Đổi trạng thái phòng về available tự do đón khách mới
+    # 2. Đổi trạng thái phòng về available
     room = db.query(models.Room).filter(models.Room.id == booking.room_id).first()
     if room:
-        room.status = "available" 
+        room.status = "available"
+
+    # 📋 Audit Trail: Ghi log hành động hủy booking
+    client_ip = request.client.host if request else None
+    log_audit_action(
+        db=db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="CANCEL_BOOKING",
+        entity_type="booking",
+        entity_id=booking_id,
+        old_value={"status": old_status, "total_price": old_price, "room_id": booking.room_id},
+        new_value={"status": "cancelled"},
+        reason=payload.reason or "Không có lý do",
+        ip_address=client_ip,
+    )
 
     db.commit()
     return {"message": "Hủy thành công và phòng đã được giải phóng."}
@@ -2427,3 +2593,573 @@ def payment_webhook(payload: WebhookPayload, db: Session = Depends(get_db)):
             db.commit()
             
     return {"status": "ok"}
+
+
+# ============================================================
+# NIGHT AUDIT — Chốt sổ ngày (chuẩn HMS thực tế)
+# Sau khi chốt, toàn bộ dữ liệu tài chính ngày đó = Read-only
+# Thực hiện bởi: Admin / Moderator / Kế toán (thường lúc 2-3h sáng)
+# ============================================================
+
+class NightAuditCloseRequest(BaseModel):
+    audit_date: Optional[str] = None   # "YYYY-MM-DD", mặc định = hôm nay
+    notes: Optional[str] = None        # Ghi chú khi chốt sổ
+
+
+@app.post("/admin/night-audit/close")
+def close_night_audit(
+    payload: NightAuditCloseRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Chốt sổ ngày (Night Audit).
+    - Khóa toàn bộ dữ liệu tài chính của ngày đó (Read-only)
+    - Tính tổng doanh thu và số booking trong ngày
+    - Ghi vào bảng night_audit_sessions và audit_log
+    Quyền: Admin / Moderator / Kế toán
+    """
+    # Kiểm tra quyền
+    perms.require_permission(current_user, P.NIGHT_AUDIT, db)
+
+    # Xác định ngày cần chốt
+    if payload.audit_date:
+        try:
+            from datetime import date as _date
+            audit_date = _date.fromisoformat(payload.audit_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Định dạng ngày không hợp lệ. Dùng YYYY-MM-DD.")
+    else:
+        audit_date = date.today()
+
+    # Kiểm tra đã chốt chưa
+    existing = db.query(models.NightAuditSession).filter(
+        models.NightAuditSession.audit_date == audit_date
+    ).first()
+    if existing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Ngày {audit_date} đã được chốt sổ lúc {existing.closed_at}. Không thể chốt lại."
+        )
+
+    # Tính doanh thu và số booking checked_out trong ngày
+    bookings_today = db.query(models.Booking).filter(
+        models.Booking.check_out_date == audit_date,
+        models.Booking.status == "checked_out"
+    ).all()
+
+    total_revenue = sum(b.total_price or 0 for b in bookings_today)
+    total_bookings_closed = len(bookings_today)
+
+    # Tạo bản ghi Night Audit
+    audit_session = models.NightAuditSession(
+        audit_date=audit_date,
+        status="closed",
+        closed_by_id=current_user.id,
+        closed_by_username=current_user.username,
+        total_revenue=total_revenue,
+        total_bookings_closed=total_bookings_closed,
+        notes=payload.notes or "",
+    )
+    db.add(audit_session)
+
+    # Ghi audit log
+    client_ip = request.client.host if request and request.client else None
+    log_audit_action(
+        db=db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="NIGHT_AUDIT_CLOSE",
+        entity_type="night_audit",
+        entity_id=None,
+        old_value={"date": str(audit_date), "status": "open"},
+        new_value={
+            "status": "closed",
+            "total_revenue": total_revenue,
+            "total_bookings": total_bookings_closed
+        },
+        reason=payload.notes or "Chốt sổ cuối ngày",
+        ip_address=client_ip,
+    )
+
+    db.commit()
+    db.refresh(audit_session)
+
+    return {
+        "message": f"Đã chốt sổ thành công ngày {audit_date}. Dữ liệu tài chính ngày này đã bị khóa.",
+        "audit_date": str(audit_date),
+        "total_revenue": total_revenue,
+        "total_bookings_closed": total_bookings_closed,
+        "closed_by": current_user.username,
+        "closed_at": str(audit_session.closed_at),
+    }
+
+
+@app.get("/admin/night-audit/status")
+def get_night_audit_status(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Kiểm tra trạng thái Night Audit hôm nay và lịch sử các phiên gần đây.
+    Quyền: Admin / Moderator / Kế toán
+    """
+    perms.require_permission(current_user, P.NIGHT_AUDIT, db)
+
+    today = date.today()
+    today_session = db.query(models.NightAuditSession).filter(
+        models.NightAuditSession.audit_date == today
+    ).first()
+
+    # Lịch sử 10 phiên gần nhất
+    history = db.query(models.NightAuditSession).order_by(
+        models.NightAuditSession.audit_date.desc()
+    ).limit(10).all()
+
+    return {
+        "today": str(today),
+        "today_is_closed": today_session is not None,
+        "today_session": {
+            "audit_date": str(today_session.audit_date),
+            "closed_by": today_session.closed_by_username,
+            "closed_at": str(today_session.closed_at),
+            "total_revenue": today_session.total_revenue,
+            "total_bookings_closed": today_session.total_bookings_closed,
+            "notes": today_session.notes,
+        } if today_session else None,
+        "history": [
+            {
+                "audit_date": str(s.audit_date),
+                "closed_by": s.closed_by_username,
+                "closed_at": str(s.closed_at),
+                "total_revenue": s.total_revenue,
+                "total_bookings_closed": s.total_bookings_closed,
+            }
+            for s in history
+        ],
+    }
+
+
+# ============================================================
+# WORK SHIFTS — Ca làm việc của Lễ tân
+# Nhân viên phải mở ca trước khi thực hiện giao dịch tài chính
+# ============================================================
+
+class OpenShiftRequest(BaseModel):
+    notes: Optional[str] = None  # Ghi chú khi mở ca
+
+
+class CloseShiftRequest(BaseModel):
+    cash_collected: float = 0.0  # Số tiền mặt thu được trong ca
+    notes: Optional[str] = None  # Ghi chú khi bàn giao ca
+
+
+@app.post("/staff/shifts/open")
+def open_work_shift(
+    payload: OpenShiftRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_staff)
+):
+    """
+    Mở ca làm việc.
+    - Nhân viên Lễ tân phải mở ca trước khi tạo booking hoặc thu tiền.
+    - Mỗi ngày chỉ được mở 1 ca (để tránh trùng lặp, ca cũ phải đóng trước).
+    """
+    today = date.today()
+
+    # Kiểm tra đã có ca mở hôm nay chưa
+    existing_open = db.query(models.WorkShift).filter(
+        models.WorkShift.user_id == current_user.id,
+        models.WorkShift.shift_date == today,
+        models.WorkShift.status == "open"
+    ).first()
+
+    if existing_open:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Bạn đã có ca đang mở từ {existing_open.opened_at}. Vui lòng đóng ca cũ trước."
+        )
+
+    new_shift = models.WorkShift(
+        user_id=current_user.id,
+        username=current_user.username,
+        shift_date=today,
+        status="open",
+        notes=payload.notes or "",
+    )
+    db.add(new_shift)
+    db.commit()
+    db.refresh(new_shift)
+
+    return {
+        "message": f"Đã mở ca làm việc thành công. Ca của {current_user.full_name} bắt đầu lúc {new_shift.opened_at}.",
+        "shift_id": new_shift.id,
+        "shift_date": str(today),
+        "opened_at": str(new_shift.opened_at),
+    }
+
+
+@app.post("/staff/shifts/close")
+def close_work_shift(
+    payload: CloseShiftRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_staff)
+):
+    """
+    Đóng ca làm việc — Bàn giao ca.
+    - Nhân viên nhập số tiền mặt thu được trong ca.
+    - Sau khi đóng, không thể thu tiền thêm trong ca đó.
+    """
+    today = date.today()
+
+    open_shift = db.query(models.WorkShift).filter(
+        models.WorkShift.user_id == current_user.id,
+        models.WorkShift.shift_date == today,
+        models.WorkShift.status == "open"
+    ).first()
+
+    if not open_shift:
+        raise HTTPException(status_code=400, detail="Không tìm thấy ca đang mở của bạn hôm nay.")
+
+    open_shift.status = "closed"
+    open_shift.closed_at = datetime.now(timezone.utc)
+    open_shift.cash_collected = payload.cash_collected
+    open_shift.notes = (open_shift.notes or "") + (f" | Bàn giao: {payload.notes}" if payload.notes else "")
+
+    # Ghi audit log khi đóng ca
+    client_ip = request.client.host if request and request.client else None
+    log_audit_action(
+        db=db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="CLOSE_WORK_SHIFT",
+        entity_type="work_shift",
+        entity_id=open_shift.id,
+        old_value={"status": "open", "opened_at": str(open_shift.opened_at)},
+        new_value={"status": "closed", "cash_collected": payload.cash_collected},
+        reason=payload.notes or "Đóng ca cuối ngày",
+        ip_address=client_ip,
+    )
+
+    db.commit()
+
+    return {
+        "message": "Đóng ca thành công. Đã ghi nhận bàn giao ca.",
+        "shift_id": open_shift.id,
+        "shift_date": str(today),
+        "opened_at": str(open_shift.opened_at),
+        "closed_at": str(open_shift.closed_at),
+        "cash_collected": payload.cash_collected,
+    }
+
+
+@app.get("/staff/shifts/me")
+def get_my_current_shift(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_staff)
+):
+    """Xem trạng thái ca làm việc hiện tại của nhân viên."""
+    today = date.today()
+    shift = db.query(models.WorkShift).filter(
+        models.WorkShift.user_id == current_user.id,
+        models.WorkShift.shift_date == today,
+    ).order_by(models.WorkShift.opened_at.desc()).first()
+
+    if not shift:
+        return {"has_shift": False, "message": "Bạn chưa mở ca hôm nay."}
+
+    return {
+        "has_shift": True,
+        "shift_id": shift.id,
+        "status": shift.status,
+        "shift_date": str(shift.shift_date),
+        "opened_at": str(shift.opened_at),
+        "closed_at": str(shift.closed_at) if shift.closed_at else None,
+        "is_open": shift.status == "open",
+    }
+
+
+# ============================================================
+# AUDIT LOG — Nhật ký hành động (Audit Trail)
+# Xem bởi: Admin và Super Admin
+# ============================================================
+
+@app.get("/admin/audit-log")
+def get_audit_log(
+    limit: int = 50,
+    offset: int = 0,
+    action_filter: Optional[str] = None,   # Lọc theo loại hành động
+    entity_type: Optional[str] = None,      # Lọc theo loại entity
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_admin)
+):
+    """
+    Xem nhật ký hành động hệ thống (Audit Trail).
+    Ghi lại toàn bộ các thay đổi quan trọng: ai làm gì, khi nào, giá trị cũ/mới.
+    Quyền: Admin trở lên.
+    """
+    perms.require_permission(current_user, P.VIEW_AUDIT_LOG, db)
+
+    query = db.query(models.AuditLog).order_by(models.AuditLog.created_at.desc())
+
+    if action_filter:
+        query = query.filter(models.AuditLog.action.ilike(f"%{action_filter}%"))
+    if entity_type:
+        query = query.filter(models.AuditLog.entity_type == entity_type)
+
+    total = query.count()
+    logs = query.offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "logs": [
+            {
+                "id": log.id,
+                "username": log.username,
+                "action": log.action,
+                "entity_type": log.entity_type,
+                "entity_id": log.entity_id,
+                "old_value": log.old_value,
+                "new_value": log.new_value,
+                "reason": log.reason,
+                "ip_address": log.ip_address,
+                "created_at": str(log.created_at),
+            }
+            for log in logs
+        ],
+    }
+
+
+# ============================================================
+# HOUSEKEEPING — Quản lý trạng thái phòng
+# Chỉ xem trạng thái phòng, không xem thông tin khách/giá
+# ============================================================
+
+class RoomStatusUpdateRequest(BaseModel):
+    status: str    # 'available' | 'cleaning' | 'maintenance'
+    reason: Optional[str] = None
+
+
+@app.get("/housekeeping/rooms")
+def housekeeping_get_rooms(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_housekeeping)
+):
+    """
+    Housekeeping xem danh sách phòng và trạng thái.
+    Không bao gồm thông tin khách hàng, giá phòng hay doanh thu.
+    """
+    perms.require_permission(current_user, P.UPDATE_ROOM_STATUS, db)
+
+    rooms = db.query(models.Room).order_by(models.Room.room_number).all()
+    result = []
+    for room in rooms:
+        room_type = db.query(models.RoomType).filter(models.RoomType.id == room.type_id).first()
+        result.append({
+            "id": room.id,
+            "room_number": room.room_number,
+            "type_name": room_type.type_name if room_type else "Không rõ",
+            "status": room.status,
+            # Không trả về: price_per_night, booking info, customer info
+        })
+    return result
+
+
+@app.put("/housekeeping/rooms/{room_id}/status")
+def housekeeping_update_room_status(
+    room_id: int,
+    payload: RoomStatusUpdateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_housekeeping)
+):
+    """
+    Housekeeping cập nhật trạng thái phòng.
+    Cho phép: available (dọn xong) | cleaning (cần dọn) | maintenance (bảo trì)
+    Không cho phép: chuyển sang 'booked' (chỉ booking mới được làm điều này)
+    """
+    perms.require_permission(current_user, P.UPDATE_ROOM_STATUS, db)
+
+    allowed_statuses = ["available", "cleaning", "maintenance"]
+    if payload.status not in allowed_statuses:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Trạng thái không hợp lệ. Chỉ được phép: {', '.join(allowed_statuses)}"
+        )
+
+    room = db.query(models.Room).filter(models.Room.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phòng.")
+
+    # Không cho phép thay đổi phòng đang có khách (booked)
+    if room.status == "booked" and payload.status != "cleaning":
+        raise HTTPException(
+            status_code=400,
+            detail="Phòng đang có khách (booked). Chỉ có thể chuyển sang trạng thái 'cleaning' sau khi trả phòng."
+        )
+
+    old_status = room.status
+    room.status = payload.status
+
+    # Ghi audit log
+    client_ip = request.client.host if request and request.client else None
+    log_audit_action(
+        db=db,
+        user_id=current_user.id,
+        username=current_user.username,
+        action="CHANGE_ROOM_STATUS",
+        entity_type="room",
+        entity_id=room_id,
+        old_value={"status": old_status, "room_number": room.room_number},
+        new_value={"status": payload.status},
+        reason=payload.reason or f"Cập nhật bởi Housekeeping",
+        ip_address=client_ip,
+    )
+
+    db.commit()
+
+    status_labels = {
+        "available": "Sẵn sàng đón khách",
+        "cleaning": "Đang dọn dẹp",
+        "maintenance": "Đang bảo trì",
+    }
+    return {
+        "message": f"Phòng {room.room_number}: {status_labels.get(payload.status, payload.status)}",
+        "room_id": room.id,
+        "room_number": room.room_number,
+        "old_status": old_status,
+        "new_status": payload.status,
+    }
+
+
+# ============================================================
+# ACCOUNTANT — Báo cáo tài chính
+# Kế toán xem báo cáo, không tham gia luồng check-in/out
+# ============================================================
+
+@app.get("/accountant/revenue-report")
+def accountant_revenue_report(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_accountant)
+):
+    """
+    Báo cáo doanh thu tổng hợp cho Kế toán.
+    Bao gồm: doanh thu theo ngày, tuần, tháng + tổng quan
+    """
+    perms.require_permission(current_user, P.VIEW_REVENUE_REPORT, db)
+
+    today = date.today()
+
+    # Tổng doanh thu toàn thời gian (từ booking checked_out)
+    total_revenue = db.query(func.sum(models.Booking.total_price)).filter(
+        models.Booking.status == "checked_out"
+    ).scalar() or 0.0
+
+    # Doanh thu hôm nay (checkout hôm nay)
+    revenue_today = db.query(func.sum(models.Booking.total_price)).filter(
+        models.Booking.status == "checked_out",
+        models.Booking.check_out_date == today
+    ).scalar() or 0.0
+
+    # Doanh thu tháng này
+    revenue_this_month = db.query(func.sum(models.Booking.total_price)).filter(
+        models.Booking.status == "checked_out",
+        func.month(models.Booking.check_out_date) == today.month,
+        func.year(models.Booking.check_out_date) == today.year,
+    ).scalar() or 0.0
+
+    # Thống kê booking
+    total_bookings = db.query(models.Booking).count()
+    bookings_checked_out = db.query(models.Booking).filter(
+        models.Booking.status == "checked_out"
+    ).count()
+    bookings_cancelled = db.query(models.Booking).filter(
+        models.Booking.status == "cancelled"
+    ).count()
+    bookings_active = db.query(models.Booking).filter(
+        models.Booking.status.in_(["pending", "confirmed", "checked_in"])
+    ).count()
+
+    # Tổng phòng và công suất
+    total_rooms = db.query(models.Room).count()
+    occupied_rooms = db.query(models.Room).filter(
+        models.Room.status == "booked"
+    ).count()
+    occupancy_rate = round((occupied_rooms / total_rooms * 100), 1) if total_rooms > 0 else 0
+
+    # 10 Night Audit gần nhất
+    recent_audits = db.query(models.NightAuditSession).order_by(
+        models.NightAuditSession.audit_date.desc()
+    ).limit(10).all()
+
+    return {
+        "report_generated_at": str(datetime.now(timezone.utc)),
+        "revenue": {
+            "total_all_time": total_revenue,
+            "today": revenue_today,
+            "this_month": revenue_this_month,
+        },
+        "bookings": {
+            "total": total_bookings,
+            "checked_out": bookings_checked_out,
+            "cancelled": bookings_cancelled,
+            "active": bookings_active,
+        },
+        "occupancy": {
+            "total_rooms": total_rooms,
+            "occupied_rooms": occupied_rooms,
+            "occupancy_rate_percent": occupancy_rate,
+        },
+        "recent_night_audits": [
+            {
+                "date": str(a.audit_date),
+                "revenue": a.total_revenue,
+                "bookings_closed": a.total_bookings_closed,
+                "closed_by": a.closed_by_username,
+            }
+            for a in recent_audits
+        ],
+    }
+
+
+@app.get("/accountant/transactions")
+def accountant_get_transactions(
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_accountant)
+):
+    """
+    Kế toán xem danh sách giao dịch thanh toán.
+    Đối soát: kiểm tra tính chính xác của các giao dịch tiền mặt, chuyển khoản.
+    """
+    perms.require_permission(current_user, P.VIEW_REVENUE_REPORT, db)
+
+    total = db.query(models.PaymentTransaction).count()
+    transactions = db.query(models.PaymentTransaction).order_by(
+        models.PaymentTransaction.created_at.desc()
+    ).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "transactions": [
+            {
+                "id": t.id,
+                "transaction_ref": t.transaction_ref,
+                "booking_id": t.booking_id,
+                "amount": t.amount,
+                "status": t.status,
+                "account_holder": t.account_holder,
+                "failure_reason": t.failure_reason,
+                "created_at": str(t.created_at),
+                "completed_at": str(t.completed_at) if t.completed_at else None,
+            }
+            for t in transactions
+        ],
+    }
